@@ -1,0 +1,50 @@
+# ============ Python / 后端 ============
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ============ SQLite 数据库（运行时数据，勿入库） ============
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ============ 日志 ============
+logs/
+*.log
+nohup.out
+
+# ============ 配置与密钥（含 LLM Key，勿入库） ============
+config.yaml
+config.*.yaml
+!config.example.yaml
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# ============ 平台运行时状态（微信/钉钉监听水位等） ============
+.wechatauto/
+wechatauto_logs/
+
+# ============ Node / 前端 ============
+node_modules/
+frontend/dist/
+*.local
+
+# ============ IDE / 编辑器 ============
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ============ 操作系统 ============
+.DS_Store
+Thumbs.db
+desktop.ini

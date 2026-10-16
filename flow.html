@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ChatAgent 消息链路图</title>
+<style>
+  :root {
+    --bg: #0d1017; --panel: #161a23; --panel-2: #1d2230; --border: #2b3345;
+    --text: #e8eaed; --dim: #93a0b4; --accent: #4f8cff; --green: #2aae67;
+    --blue: #0089ff; --orange: #f0a020; --red: #e5534b; --purple: #a06bff; --teal: #20b8a0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px; padding: 28px 16px 60px;
+  }
+  .wrap { max-width: 1320px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 22px; }
+  header h1 { font-size: 25px; letter-spacing: 1px; }
+  header h1 span { color: var(--accent); }
+  header p { color: var(--dim); margin-top: 8px; font-size: 13px; }
+
+  /* 链路总览条 */
+  .chain-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 22px; }
+  .chain-card h3 { font-size: 14px; color: var(--dim); margin-bottom: 12px; letter-spacing: 1px; }
+  .chain { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; row-gap: 12px; }
+  .node {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    border: 1px solid var(--border); background: var(--panel-2);
+    border-radius: 10px; padding: 8px 14px; min-width: 108px;
+  }
+  .node .ico { font-size: 19px; }
+  .node b { font-size: 12.5px; }
+  .node small { font-size: 10.5px; color: var(--dim); }
+  .node.hot { border-color: var(--accent); box-shadow: 0 0 10px rgba(79,140,255,.18); }
+  .node.opt { border-style: dashed; border-color: var(--purple); }
+  .arr { color: var(--accent); font-size: 17px; font-weight: 700; padding: 0 2px; }
+  .arr.back { color: var(--green); }
+  .chain-note { margin-top: 12px; font-size: 12px; color: var(--dim); line-height: 1.7; }
+  .chain-note em { font-style: normal; color: var(--teal); }
+
+  /* 时序图容器 */
+  .seq-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px; overflow-x: auto; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 2px 2px 14px; font-size: 12px; color: var(--dim); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .lg { display: inline-block; width: 30px; height: 0; }
+  .lg.solid { border-top: 2.4px solid var(--accent); }
+  .lg.solid2 { border-top: 2px solid #7d92b5; }
+  .lg.ret { border-top: 2px dashed #8a97a8; }
+  .lg.async { border-top: 2px dashed var(--teal); }
+  .lg.opt { border-top: 2px dashed var(--purple); }
+  .dotp { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--purple); }
+
+  /* 变体链路 */
+  .variants { margin-top: 26px; }
+  .variants h2 { font-size: 18px; margin-bottom: 4px; }
+  .variants .sub { color: var(--dim); font-size: 12.5px; margin-bottom: 14px; }
+  .v-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .v-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+  .v-card h4 { font-size: 13.5px; margin-bottom: 10px; }
+  .v-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+  .vs {
+    font-size: 11.5px; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 9px; line-height: 1.4;
+  }
+  .vs em { display: block; font-style: normal; font-size: 10px; color: var(--dim); }
+  .vs.red { border-color: rgba(229,83,75,.6); color: #ffb4ae; }
+  .vs.green { border-color: rgba(42,174,103,.6); }
+  .vs.purple { border-style: dashed; border-color: var(--purple); }
+  .vp { color: var(--accent); font-weight: 700; font-size: 12px; }
+  .v-card p { margin-top: 10px; font-size: 12px; color: var(--dim); line-height: 1.7; }
+  .v-card p b { color: var(--text); }
+
+  footer { margin-top: 30px; text-align: center; color: var(--dim); font-size: 12px; line-height: 1.8; }
+  .code { font-family: Consolas, monospace; color: #9ecbff; font-size: 11.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>🔗 Chat<span>Agent</span> 消息链路图</h1>
+    <p>一条消息从「对方发送」到「回复送达」的完整调用链路 · 时序顺序自上而下 · 编号即执行顺序</p>
+  </header>
+
+  <!-- ============ 链路总览 ============ -->
+  <div class="chain-card">
+    <h3>链 路 总 览（一图速览）</h3>
+    <div class="chain">
+      <div class="node"><span class="ico">💬</span><b>对方用户</b><small>微信 / 钉钉</small></div>
+      <span class="arr">→</span>
+      <div class="node hot"><span class="ico">🔌</span><b>连接器监听</b><small>poll() 循环拾取</small></div>
+      <span class="arr">→</span>
+      <div class="node hot"><span class="ico">🧠</span><b>Agent 调度</b><small>ingest 触发生成</small></div>
+      <span class="arr">→</span>
+      <div class="node hot"><span class="ico">⚙️</span><b>生成引擎</b><small>ReplyGenerator</small></div>
+      <span class="arr">→</span>
+      <div class="node opt"><span class="ico">🛡️</span><b>JEV 判断</b><small>预判 / 复审（可选）</small></div>
+      <span class="arr">→</span>
+      <div class="node hot"><span class="ico">🧠</span><b>LLM 生成候选</b><small>DeepSeek API</small></div>
+      <span class="arr">→</span>
+      <div class="node"><span class="ico">💾</span><b>存储 + WS 推送</b><small>pending 待审核</small></div>
+      <span class="arr">→</span>
+      <div class="node"><span class="ico">🖥️</span><b>前端 / 人工审核</b><small>批准 · 驳回</small></div>
+      <span class="arr back">⇄</span>
+      <div class="node hot"><span class="ico">🔌</span><b>send_reply</b><small>回发平台</small></div>
+      <span class="arr back">→</span>
+      <div class="node"><span class="ico">💬</span><b>对方收到回复</b><small>微信 / 钉钉</small></div>
+    </div>
+    <div class="chain-note">
+      实线蓝色框 = <b>主链路（每条消息必经）</b>；紫色虚线框 = <b>JEV 可选增强</b>（关闭时引擎自动兜底，链路不中断）；
+      绿色 <em>⇄</em> = 审核后回发。整条链路自动执行到「待审核」为止，<em>发送与否完全由人工可控</em>（auto_send=true 可改为全自动）。
+    </div>
+  </div>
+
+  <!-- ============ 时序链路图 ============ -->
+  <div class="seq-card">
+    <div class="legend">
+      <span><i class="lg solid"></i>主链路调用</span>
+      <span><i class="lg solid2"></i>普通同步调用</span>
+      <span><i class="lg ret"></i>返回 / 依赖外部</span>
+      <span><i class="lg async"></i>异步事件（WS 推送）</span>
+      <span><i class="dotp"></i>可选步骤（JEV 关闭时跳过）</span>
+    </div>
+    <svg id="seq" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
+
+  <!-- ============ 变体链路 ============ -->
+  <div class="variants">
+    <h2>🔀 链路变体</h2>
+    <div class="sub">同一套链路，4 种运行形态（由配置 / JEV 结果 / 入口不同而分流）</div>
+    <div class="v-grid">
+      <div class="v-card">
+        <h4>🅰 自动发送链路 <span class="badge" style="color:var(--orange)">auto_send=true</span></h4>
+        <div class="v-steps">
+          <span class="vs">新消息<em>监听</em></span><span class="vp">→</span>
+          <span class="vs">生成回复<em>generate()</em></span><span class="vp">→</span>
+          <span class="vs green">status=sent<em>跳过审核</em></span><span class="vp">→</span>
+          <span class="vs">send_reply<em>直接发送</em></span>
+        </div>
+        <p><b>与主链路差异：</b>生成结果不经「待审核」，<span class="code">_handle()</span> 中直接 <span class="code">_dispatch() → send_reply()</span>。适合低风险场景。</p>
+      </div>
+
+      <div class="v-card">
+        <h4>🅱 JEV 拦截链路 <span class="badge" style="color:var(--red)">质量门禁</span></h4>
+        <div class="v-steps">
+          <span class="vs">生成候选</span><span class="vp">→</span>
+          <span class="vs purple">JEV 复审<em>全部不合格</em></span><span class="vp">→</span>
+          <span class="vs purple">重写一次<em>携带失败原因</em></span><span class="vp">→</span>
+          <span class="vs purple">复审再失败</span><span class="vp">→</span>
+          <span class="vs red">🚫 blocked 拦截<em>禁止自动发送</em></span><span class="vp">→</span>
+          <span class="vs">人工确认<em>可强制发送</em></span>
+        </div>
+        <p><b>典型场景：</b>候选含「转账 / 密码 / 红包」等敏感内容。前端显示红色「已拦截」徽标与 <b>忽略拦截，仍要发送</b> 按钮，责任在人。</p>
+      </div>
+
+      <div class="v-card">
+        <h4>🅲 对话测试链路 <span class="badge" style="color:var(--blue)">POST /api/chat</span></h4>
+        <div class="v-steps">
+          <span class="vs">前端 DirectChat</span><span class="vp">→</span>
+          <span class="vs">/api/chat<em>不走连接器</em></span><span class="vp">→</span>
+          <span class="vs">generate()<em>同一引擎接口</em></span><span class="vp">→</span>
+          <span class="vs green">同步返回回复</span>
+        </div>
+        <p><b>用途：</b>验证提示词 / JEV / 未来 RAG 效果。与主链路共用 <span class="code">ReplyGenerator</span>，但不经过连接器与人工审核队列。</p>
+      </div>
+
+      <div class="v-card">
+        <h4>🅳 RAG 扩展链路 <span class="badge" style="color:var(--dim)">预留</span></h4>
+        <div class="v-steps">
+          <span class="vs">generate()</span><span class="vp">→</span>
+          <span class="vs">检索知识库<em>向量匹配</em></span><span class="vp">→</span>
+          <span class="vs">拼装上下文<em>历史+知识</em></span><span class="vp">→</span>
+          <span class="vs">LLM 生成</span><span class="vp">→</span>
+          <span class="vs">下游不变<em>复审/审核复用</em></span>
+        </div>
+        <p><b>扩展方式：</b>新增 <span class="code">RagReplyGenerator(ReplyGenerator)</span>，在 <span class="code">build_engine()</span> 注册即可；JEV 复审、审核链路全部自动复用，其余代码零改动。</p>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    关键代码位置：监听循环 <span class="code">connectors/base.py::_poll_loop</span> ·
+    触发生成 <span class="code">core/agent.py::_handle</span> ·
+    生成接口 <span class="code">engine/base.py::ReplyGenerator</span> ·
+    JEV <span class="code">engine/jev.py</span> ·
+    审核 <span class="code">api/routes.py::/replies/{id}/approve</span>
+    <br/>ChatAgent · 测试全部通过（31 单元 + 14 端到端） · architecture.html 可查看静态架构图
+  </footer>
+</div>
+
+<script>
+// ================= 参与者 =================
+const P = [
+  { id:'peer',   ico:'💬', name:'对方用户',        sub:'微信 / 钉钉',      color:'#2aae67' },
+  { id:'conn',   ico:'🔌', name:'连接器',          sub:'Connector·监听循环', color:'#4f8cff' },
+  { id:'agent',  ico:'🧠', name:'AgentService',    sub:'核心调度',          color:'#f0a020' },
+  { id:'engine', ico:'⚙️', name:'ReplyGenerator',  sub:'回复生成接口',       color:'#0089ff' },
+  { id:'jev',    ico:'🛡️', name:'JEV Judge',       sub:'预判/复审·可选',     color:'#a06bff' },
+  { id:'llm',    ico:'🤖', name:'DeepSeek API',    sub:'LLM 候选生成',      color:'#e5534b' },
+  { id:'store',  ico:'💾', name:'Store·EventBus',  sub:'内存存储/广播',      color:'#20b8a0' },
+  { id:'fe',     ico:'🖥️', name:'前端 + 人工审核',  sub:'Vue 3 页面',       color:'#8899aa' },
+];
+const IDX = Object.fromEntries(P.map((p, i) => [p.id, i]));
+const COLW = 162, W = P.length * COLW, HEADH = 56, TOP = 14, Y0 = TOP + HEADH + 34;
+const X = i => i * COLW + COLW / 2;
+const XX = id => X(IDX[id]);
+
+// ================= 链路步骤 =================
+const M = [
+  { section:'链路① 消息监听 —— 需求①：一旦监听到新消息，立即触发生成' },
+  { from:'peer',  to:'conn',   label:'新消息到达（微信消息 / 钉钉 CLI）', hot:true },
+  { self:'conn',               label:'poll() 监听循环拾取', hot:true, sub:'间隔可配，默认 1s' },
+  { from:'conn',  to:'agent',  label:'on_messages([msg])', hot:true },
+  { from:'agent', to:'store',  label:'add(msg) 去重 + 入库' },
+  { from:'store', to:'fe',     label:'WS⓵ message 事件', async:true, sub:'前端消息流实时出现' },
+
+  { section:'链路② 回复生成 —— ReplyGenerator 接口 + JEV 可选增强' },
+  { from:'agent', to:'engine', label:'generate(msg, history)', hot:true },
+  { from:'engine', to:'jev',   label:'pre_judge() 预判', opt:true, sub:'风险 / 意图 / 建议行动' },
+  { from:'jev',   to:'engine', label:'结构化判断', ret:true },
+  { from:'engine', to:'llm',   label:'POST /chat/completions', sub:'提示词 = 历史 + JEV 判断' },
+  { from:'llm',   to:'engine', label:'N 条候选回复', ret:true },
+  { from:'engine', to:'jev',   label:'review(候选) 复审', opt:true, sub:'打分 / 排序 / 质量门禁' },
+  { from:'jev',   to:'engine', label:'分数 + 通过标记 + 排序', ret:true },
+  { note:'JEV 关闭时：以上 4 步自动跳过，由 LLM 兜底判断与排序，链路不中断', col:'jev' },
+  { self:'engine',             label:'全部不合格 → 重写一次', sub:'携带失败原因再次调用 LLM' },
+  { from:'engine', to:'agent', label:'GenerationResult', ret:true, hot:true, sub:'content / candidates / blocked' },
+  { note:'blocked：🚫 禁止自动发送，前端提供「忽略拦截，仍要发送」', col:'agent' },
+  { from:'agent', to:'store',  label:'add(reply)', sub:'status = pending / blocked' },
+  { from:'store', to:'fe',     label:'WS⓶ reply 事件', async:true, sub:'待审核卡片实时弹出' },
+
+  { section:'链路③ 人工审核与发送 —— auto_send=false（默认），发送由人决定' },
+  { self:'fe',                 label:'审核：批准 / 驳回 / 查看候选' },
+  { from:'fe',    to:'agent',  label:'POST /api/replies/{id}/approve' },
+  { from:'agent', to:'conn',   label:'send_reply(reply)', hot:true },
+  { from:'conn',  to:'peer',   label:'回复送达微信 / 钉钉', hot:true },
+  { from:'agent', to:'fe',     label:'WS⓷ reply_updated', async:true, sub:'status → sent，徽标更新' },
+];
+
+// ================= SVG 渲染 =================
+const NS = 'http://www.w3.org/2000/svg';
+const svg = document.getElementById('seq');
+const CIRCLES = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳㉑㉒㉓㉔㉕';
+const circ = n => CIRCLES[n - 1] || `(${n})`;
+
+function el(tag, attrs, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  svg.appendChild(e);
+  return e;
+}
+
+// 预计算每行 y
+let y = Y0; const rows = [];
+let n = 0;
+for (const m of M) {
+  if (m.section) { y += 14; rows.push({ ...m, _y: y }); y += 40; continue; }
+  if (m.note)    { rows.push({ ...m, _y: y }); y += 42; continue; }
+  n += 1; m.num = circ(n);
+  rows.push({ ...m, _y: y });
+  y += m.self ? (m.sub ? 62 : 54) : (m.sub ? 58 : 50);
+}
+const H = y + 30 + HEADH + 14;
+svg.setAttribute('width', W); svg.setAttribute('height', H);
+svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+svg.style.maxWidth = W + 'px'; svg.style.margin = '0 auto'; svg.style.display = 'block';
+
+// 箭头 marker
+const defs = el('defs', {});
+function marker(id, fill, open) {
+  const mk = document.createElementNS(NS, 'marker');
+  mk.setAttribute('id', id); mk.setAttribute('markerWidth', '11'); mk.setAttribute('markerHeight', '9');
+  mk.setAttribute('refX', '9'); mk.setAttribute('refY', '4.5'); mk.setAttribute('orient', 'auto');
+  const p = document.createElementNS(NS, 'path');
+  if (open) { p.setAttribute('d', 'M1,1 L9,4.5 L1,8'); p.setAttribute('fill', 'none'); p.setAttribute('stroke', fill); p.setAttribute('stroke-width', '1.6'); }
+  else p.setAttribute('d', 'M0,0 L9,4.5 L0,9 z'), p.setAttribute('fill', fill);
+  mk.appendChild(p); defs.appendChild(mk);
+}
+marker('mHot', '#4f8cff'); marker('mCall', '#7d92b5');
+marker('mRet', '#8a97a8', true); marker('mAsync', '#20b8a0'); marker('mSelf', '#7d92b5');
+
+// 参与者（顶部 + 底部）与生命线
+function header(yTop) {
+  P.forEach((p, i) => {
+    const w = COLW - 14, x = X(i) - w / 2;
+    el('rect', { x, y: yTop, width: w, height: HEADH, rx: 10,
+      fill: '#1d2230', stroke: p.color, 'stroke-width': 1.3, opacity: 0.97 });
+    const t = el('text', { x: X(i), y: yTop + 24, 'text-anchor': 'middle', fill: '#e8eaed',
+      'font-size': 13, 'font-weight': 700 });
+    t.textContent = `${p.ico} ${p.name}`;
+    el('text', { x: X(i), y: yTop + 42, 'text-anchor': 'middle', fill: '#93a0b4', 'font-size': 10.5 }).textContent = p.sub;
+  });
+}
+header(TOP);
+const by2 = H - 14 - HEADH;
+header(by2);
+P.forEach((_, i) => el('line', { x1: X(i), y1: TOP + HEADH, x2: X(i), y2: by2,
+  stroke: '#33405a', 'stroke-width': 1.2, 'stroke-dasharray': '3 5' }));
+
+// 分区条带
+for (const r of rows) if (r.section) {
+  el('rect', { x: 0, y: r._y - 16, width: W, height: 32, fill: 'rgba(79,140,255,.07)' });
+  el('rect', { x: 0, y: r._y - 16, width: 4, height: 32, fill: '#4f8cff' });
+  el('text', { x: 12, y: r._y + 5, fill: '#9ecbff', 'font-size': 13.5, 'font-weight': 700, 'letter-spacing': 1 })
+    .textContent = r.section;
+}
+
+// 消息箭头
+function label(x, yy, txt, fill, size, weight) {
+  el('text', { x, y: yy, 'text-anchor': 'middle', fill, 'font-size': size || 12,
+    'font-weight': weight || 500 }).textContent = txt;
+}
+for (const r of rows) {
+  if (r.section) continue;
+  const yC = r._y;
+
+  if (r.note) { // 备注浮框
+    const w = 330, x = XX(r.col) - w / 2;
+    el('rect', { x, y: yC - 13, width: w, height: 26, rx: 7, fill: 'rgba(160,107,255,.08)',
+      stroke: '#a06bff', 'stroke-width': 1, 'stroke-dasharray': '4 3' });
+    el('text', { x: XX(r.col), y: yC + 4, 'text-anchor': 'middle', fill: '#c9adff', 'font-size': 11 })
+      .textContent = r.note;
+    continue;
+  }
+
+  if (r.self) { // 自环（自己调自己）
+    const x = XX(r.self), hot = r.hot;
+    el('path', { d: `M ${x} ${yC - 4} C ${x + 46} ${yC - 4}, ${x + 46} ${yC + 22}, ${x + 4} ${yC + 22}`,
+      fill: 'none', stroke: hot ? '#4f8cff' : '#7d92b5', 'stroke-width': hot ? 2.4 : 1.8, 'marker-end': 'url(#mSelf)' });
+    label(x + 76, yC + 4, `${r.num} ${r.label}`, hot ? '#9ecbff' : '#cdd6e4', 12, hot ? 700 : 500);
+    if (r.sub) label(x + 76, yC + 21, r.sub, '#8fa0b8', 10.5);
+    continue;
+  }
+
+  const x1 = XX(r.from), x2 = XX(r.to), mid = (x1 + x2) / 2;
+  let stroke = '#7d92b5', dash = '', marker = 'url(#mCall)', sw = 1.8;
+  if (r.hot)      { stroke = '#4f8cff'; marker = 'url(#mHot)'; sw = 2.5; }
+  if (r.ret)      { stroke = '#8a97a8'; dash = '5 4'; marker = 'url(#mRet)'; sw = 1.6; }
+  if (r.async)    { stroke = '#20b8a0'; dash = '6 4'; marker = 'url(#mAsync)'; sw = 1.8; }
+  if (r.opt)      dash = '5 4';
+  el('line', { x1, y1: yC, x2, y2: yC, stroke, 'stroke-width': sw,
+    'stroke-dasharray': dash, 'marker-end': marker });
+
+  const lFill = r.opt ? '#c9adff' : (r.hot ? '#9ecbff' : '#cdd6e4');
+  label(mid, yC - 7, `${r.num} ${r.label}${r.opt ? '（可选）' : ''}`, lFill, 12, r.hot ? 700 : 500);
+  if (r.sub) label(mid, yC + 16, r.sub, '#8fa0b8', 10.5);
+}
+</script>
+</body>
+</html>

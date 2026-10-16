@@ -1,0 +1,84 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1e222b;
+  --border: #2a2f3a;
+  --text: #e8eaed;
+  --text-dim: #9aa3b2;
+  --accent: #4f8cff;
+  --green: #2aae67;
+  --blue: #0089ff;
+  --orange: #f0a020;
+  --red: #e5534b;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #app { height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  font-size: 14px;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+button:hover { background: #262c38; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: #3d7bef; }
+button.success { background: var(--green); border-color: var(--green); color: #fff; }
+button.danger { background: transparent; border-color: var(--red); color: var(--red); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+input, select, textarea {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+  width: 100%;
+  outline: none;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 18px;
+  vertical-align: middle;
+}
+.tag.wechat { background: rgba(42, 174, 103, 0.15); color: var(--green); }
+.tag.dingtalk { background: rgba(0, 137, 255, 0.15); color: var(--blue); }
+.tag.web { background: rgba(154, 163, 178, 0.15); color: var(--text-dim); }
+.tag.pending { background: rgba(240, 160, 32, 0.15); color: var(--orange); }
+.tag.sent { background: rgba(42, 174, 103, 0.15); color: var(--green); }
+.tag.blocked { background: rgba(229, 83, 75, 0.18); color: var(--red); }
+.tag.rejected { background: rgba(154, 163, 178, 0.15); color: var(--text-dim); }
+.tag.ignored { background: rgba(154, 163, 178, 0.1); color: var(--text-dim); opacity: 0.7; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+}
+.card h3 {
+  font-size: 13px;
+  color: var(--text-dim);
+  font-weight: 600;
+  margin-bottom: 10px;
+  letter-spacing: 0.5px;
+}

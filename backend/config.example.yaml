@@ -1,0 +1,75 @@
+# ChatAgent 后端配置示例。复制为 config.yaml 后修改；环境变量 CHATAGENT_* 优先级更高。
+# 注意：前端「设置」面板的持久化写回目标是 config.yaml（本文件仅作模板，勿手工改后直接依赖）。
+
+engine: mock          # mock | llm（llm 需配置 llm.api_key）
+auto_send: false      # 自动发送开关（默认关：仅生成草稿，人工确认后发送；可在前端按钮切换）
+debounce_seconds: 3.0 # 连发合并：静默 N 秒后才生成（同会话新消息重置计时）；0 = 关闭
+# 安全约束：本项目不支持自动发送。回复仅作为草稿生成（待确认），
+# 发送必须由人工在前端确认（可编辑草稿后发送）。
+
+db_path: "chatagent.db"   # SQLite 落盘路径（消息/草稿/审计日志）；设为 ":memory:" 则不落盘
+
+# ---- 消息场景策略 ----
+group_trigger: at-mention    # 群聊触发：at-mention(只回@我) | all(全部触发) | listen-only(只监听不回复)
+non_text_action: placeholder # 非文本消息(图片/语音/文件等)：placeholder(生成提示草稿) | skip(直接忽略)
+llm_rate_limit_per_chat: 10  # 每会话每分钟最多生成次数，超出忽略并记录原因；0 = 不限
+allowed_contacts: []         # 联系人白名单（会话名）；空 = 允许全部；例：["张三", "项目群"]
+                             # 也可在前端「联系人白名单」面板运行时修改（立即生效）
+
+# ---- 监控告警（告警消息发给你自己，默认关闭） ----
+alert_channel: "off"         # off | wechat-filehelper | dingtalk-self
+alert_dingtalk_chat_id: ""   # dingtalk-self 的目标会话 ID
+alert_min_interval: 60.0     # 两次通知最小间隔（秒）
+alert_check_interval: 30.0   # 连接器健康巡检间隔（秒）
+llm_failure_threshold: 3     # LLM 连续失败 N 次后告警
+
+# ---- 部署 ----
+log_file: "logs/chatagent.log"  # 日志文件（按天轮转，保留 14 天）；空 = 仅控制台
+static_dir: ""                  # 前端构建产物目录；空 = 自动探测 ../frontend/dist
+
+# ---- 访问控制（无登录方案）：默认仅本机可访问 ----
+allowed_ips: ["127.0.0.1", "::1"]
+
+llm:
+  api_key: ""                        # 或环境变量 CHATAGENT_LLM_API_KEY
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"
+  temperature: 0.7
+  num_candidates: 1                  # 每次生成的候选数量（参考项目为 3）
+  max_retries: 2                     # 失败重试次数（超时/5xx/429 才重试）；全部失败会生成错误占位草稿
+  retry_backoff: 1.0                 # 重试退避基数（秒），指数递增
+
+jev:                                 # JEV 结构化判断（可选，参考 TypeSafe JEV）
+  enabled: false
+  provider: mock                     # mock | typesafe
+  api_key: ""                        # typesafe 需要；或环境变量 CHATAGENT_JEV_API_KEY
+  base_url: "https://api.typesafe.ai"
+  model: "jev-latest"
+  rewrite_on_fail: true              # 复审全部不合格时重写一次
+
+wechat:
+  enabled: true
+  mode: mock                         # mock | replica | wxauto
+  auto_start: false                  # 服务启动时自动开始监听（默认关，前端按钮控制）
+  poll_interval: 1.0
+  # mode=replica（推荐，微信 4.x，需 wechatauto-replica 库 + 本机微信已登录）
+  #   读取走本地数据库增量轮询，不受窗口影响；发送仅在你确认草稿后发生
+  # mode=wxauto（旧版兼容，仅支持微信 3.9.x）
+  listen_chats: []                   # 要监听的会话：昵称/备注均可，如 ["文件传输助手", "张三"]
+  #                                 # 留空则默认只监听「文件传输助手」
+
+dingtalk:
+  enabled: true
+  mode: mock                         # mock | dws | cli
+  auto_start: false                  # 服务启动时自动开始监听（默认关，前端按钮控制）
+  poll_interval: 1.0
+
+  # ---- mode=dws（钉钉官方 DWS CLI，本机需已登录: dws auth login）----
+  dws_bin: dws                       # DWS 可执行文件路径
+  listen_kind: at-me                 # at-me(推荐,只回@我) | all-direct | all-group | group
+  listen_chats: []                   # listen_kind=group 时的群名列表，如 ["项目群"]
+  reply_mode: quote                  # quote(引用回复原消息) | plain(直接发送)
+
+  # ---- mode=cli（通用 CLI 约定，兼容保留）----
+  command: ""
+  reply_command: ""

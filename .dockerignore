@@ -1,0 +1,8 @@
+**/__pycache__
+**/.venv
+**/node_modules
+**/dist
+**/logs
+**/.pytest_cache
+**/chatagent.db*
+.git

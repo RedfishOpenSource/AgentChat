@@ -1,0 +1,22 @@
+services:
+  chatagent:
+    build: .
+    container_name: chatagent
+    ports:
+      - "8000:8000"
+    volumes:
+      - chatagent-data:/app/backend        # SQLite 数据库与日志持久化
+    environment:
+      CHATAGENT_ENGINE: ${CHATAGENT_ENGINE:-mock}
+      CHATAGENT_LLM_API_KEY: ${CHATAGENT_LLM_API_KEY:-}
+      CHATAGENT_ALLOWED_IPS: ${CHATAGENT_ALLOWED_IPS:-*}
+      CHATAGENT_ALLOWED_CONTACTS: ${CHATAGENT_ALLOWED_CONTACTS:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  chatagent-data:

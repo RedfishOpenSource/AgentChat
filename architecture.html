@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ChatAgent 架构图</title>
+<style>
+  :root {
+    --bg: #0d1017;
+    --panel: #161a23;
+    --panel-2: #1d2230;
+    --border: #2b3345;
+    --text: #e8eaed;
+    --dim: #93a0b4;
+    --accent: #4f8cff;
+    --green: #2aae67;
+    --blue: #0089ff;
+    --orange: #f0a020;
+    --red: #e5534b;
+    --purple: #a06bff;
+    --line: #46536b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px;
+    padding: 28px 16px 60px;
+  }
+  .wrap { max-width: 1220px; margin: 0 auto; }
+
+  /* ---------- 头部 ---------- */
+  header { text-align: center; margin-bottom: 26px; }
+  header h1 { font-size: 26px; letter-spacing: 1px; }
+  header h1 span { color: var(--accent); }
+  header p { color: var(--dim); margin-top: 8px; font-size: 13px; }
+  .stack { display: flex; gap: 8px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
+  .stack b {
+    font-weight: 500; font-size: 12px; padding: 4px 12px; border-radius: 20px;
+    border: 1px solid var(--border); color: var(--dim); background: var(--panel);
+  }
+
+  /* ---------- 通用盒子 ---------- */
+  .layer { border-radius: 14px; padding: 16px; }
+  .layer-title {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 15px; font-weight: 700; margin-bottom: 12px;
+  }
+  .layer-title small { font-weight: 400; color: var(--dim); font-size: 12px; }
+  .box {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 12px;
+  }
+  .box h4 { font-size: 13px; margin-bottom: 6px; }
+  .box ul { list-style: none; }
+  .box li {
+    font-size: 12px; color: var(--dim); padding: 2.5px 0 2.5px 14px; position: relative; line-height: 1.45;
+  }
+  .box li::before { content: "·"; position: absolute; left: 3px; color: var(--accent); font-weight: 700; }
+  .box li b { color: var(--text); font-weight: 600; }
+  .code { font-family: Consolas, "Courier New", monospace; font-size: 11.5px; color: #9ecbff; }
+  .badge {
+    display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 9px;
+    margin-left: 6px; vertical-align: 1px;
+  }
+  .b-green { background: rgba(42,174,103,.15); color: var(--green); }
+  .b-blue { background: rgba(0,137,255,.15); color: var(--blue); }
+  .b-orange { background: rgba(240,160,32,.15); color: var(--orange); }
+  .b-purple { background: rgba(160,107,255,.15); color: var(--purple); }
+  .b-gray { background: rgba(147,160,180,.15); color: var(--dim); }
+
+  /* ---------- 前端层 ---------- */
+  .fe {
+    background: linear-gradient(180deg, rgba(79,140,255,.08), rgba(79,140,255,.02)), var(--panel);
+    border: 1px solid rgba(79,140,255,.35);
+  }
+  .fe-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .fe .box { text-align: center; padding: 12px 8px; }
+  .fe .box .ico { font-size: 20px; margin-bottom: 4px; }
+  .fe .box h4 { margin-bottom: 3px; }
+  .fe .box p { font-size: 11.5px; color: var(--dim); }
+
+  /* ---------- 竖直箭头 ---------- */
+  .v-link { display: flex; justify-content: center; gap: 120px; height: 58px; position: relative; }
+  .v-arrow { position: relative; width: 0; }
+  .v-arrow .stem { position: absolute; left: 0; top: 6px; bottom: 12px; width: 2px; background: var(--line); margin-left: -1px; }
+  .v-arrow .head { position: absolute; left: -5px; border: 6px solid transparent; }
+  .v-arrow.down .head { bottom: 0; border-top: 9px solid var(--line); }
+  .v-arrow.up .head { top: 0; border-bottom: 9px solid var(--line); }
+  .v-label {
+    position: absolute; white-space: nowrap; font-size: 11.5px; color: var(--dim);
+    background: var(--bg); padding: 1px 7px; border-radius: 8px; border: 1px dashed var(--border);
+  }
+
+  /* ---------- 后端层 ---------- */
+  .be {
+    background: linear-gradient(180deg, rgba(42,174,103,.06), rgba(42,174,103,.01)), var(--panel);
+    border: 1px solid rgba(42,174,103,.35);
+  }
+  .be-cols { display: grid; grid-template-columns: 1fr 52px 1.25fr 52px 1.25fr; gap: 0; align-items: stretch; }
+  .col { display: flex; flex-direction: column; gap: 10px; }
+  .col-title { font-size: 12px; color: var(--dim); letter-spacing: 2px; text-align: center; margin-bottom: 2px; }
+
+  /* 横向箭头 */
+  .h-arrows { display: flex; flex-direction: column; justify-content: center; gap: 26px; padding: 0 2px; }
+  .h-arrow { position: relative; height: 2px; background: var(--line); }
+  .h-arrow.right::after {
+    content: ""; position: absolute; right: -1px; top: -5px;
+    border: 6px solid transparent; border-left: 9px solid var(--line);
+  }
+  .h-arrow.left::after {
+    content: ""; position: absolute; left: -1px; top: -5px;
+    border: 6px solid transparent; border-right: 9px solid var(--line);
+  }
+  .h-arrow .tag {
+    position: absolute; top: -22px; left: 50%; transform: translateX(-50%);
+    white-space: nowrap; font-size: 10.5px; color: var(--dim);
+  }
+
+  /* Agent 中间列内部管线 */
+  .pipe { display: flex; align-items: center; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+  .step {
+    font-size: 11px; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 8px; color: var(--text); line-height: 1.35;
+  }
+  .step em { display: block; font-style: normal; font-size: 10px; color: var(--dim); }
+  .pa { color: var(--line); font-size: 12px; font-weight: 700; }
+
+  /* 引擎内部 */
+  .engine-flow { margin-top: 8px; }
+  .ef-row { display: flex; align-items: stretch; gap: 5px; }
+  .ef {
+    flex: 1; font-size: 11px; border-radius: 7px; padding: 6px 7px; line-height: 1.4;
+    border: 1px dashed var(--border); background: var(--panel-2);
+  }
+  .ef b { display: block; font-size: 11.5px; }
+  .ef small { color: var(--dim); font-size: 10px; }
+  .ef.dashed { border-style: dashed; }
+  .impls { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .impl { border-left: 3px solid var(--accent); }
+
+  /* ---------- 外部依赖 ---------- */
+  .ext-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .ext { text-align: center; padding: 12px 10px; }
+  .ext .ico { font-size: 22px; }
+  .ext h4 { font-size: 13px; margin: 5px 0 3px; }
+  .ext p { font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+  .ext.on-wechat { border-color: rgba(42,174,103,.45); }
+  .ext.on-blue { border-color: rgba(0,137,255,.45); }
+  .ext.on-purple { border-color: rgba(160,107,255,.4); }
+
+  /* ---------- 生命周期 ---------- */
+  .lifecycle { margin-top: 30px; }
+  .lifecycle h2 { font-size: 17px; margin-bottom: 4px; }
+  .lifecycle .sub { color: var(--dim); font-size: 12.5px; margin-bottom: 14px; }
+  .lc-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+  .lc {
+    position: relative; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 12px 10px;
+  }
+  .lc .num {
+    position: absolute; top: -11px; left: 10px; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .lc h5 { font-size: 12.5px; margin: 6px 0 5px; }
+  .lc p { font-size: 11px; color: var(--dim); line-height: 1.55; }
+  .lc .where { display: inline-block; margin-top: 6px; font-size: 10px; color: #9ecbff; font-family: Consolas, monospace; }
+  .lc.red { border-color: rgba(229,83,75,.5); } .lc.red .num { background: var(--red); }
+  .lc.green { border-color: rgba(42,174,103,.5); } .lc.green .num { background: var(--green); }
+  .lc.orange { border-color: rgba(240,160,32,.5); } .lc.orange .num { background: var(--orange); }
+
+  /* ---------- 需求映射 ---------- */
+  .req { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 26px; }
+  .req .box li::before { content: "✓"; color: var(--green); }
+
+  footer { margin-top: 30px; text-align: center; color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>🤖 Chat<span>Agent</span> 架构图</h1>
+    <p>微信 / 钉钉智能回复助手 —— 监听新消息 → 生成回复 → JEV 复审（可选）→ 人工可控发送</p>
+    <div class="stack">
+      <b>Vue 3 + Vite（前端）</b><b>Python FastAPI（后端）</b><b>WebSocket 实时推送</b>
+      <b>DeepSeek / OpenAI 兼容 LLM</b><b>JEV 结构化判断（可选）</b><b>wxauto / 钉钉 CLI</b>
+    </div>
+  </header>
+
+  <!-- ===================== 前端层 ===================== -->
+  <div class="layer fe">
+    <div class="layer-title">🖥️ 前端 Frontend <small>Vue 3 + Vite · http://localhost:5173 · frontend/src/</small></div>
+    <div class="fe-grid">
+      <div class="box"><div class="ico">🔌</div><h4>StatusPanel</h4><p>连接器状态监控<br/>启动 / 停止</p></div>
+      <div class="box"><div class="ico">📨</div><h4>SimulatorForm</h4><p>模拟注入微信/钉钉<br/>新消息（触发自动回复）</p></div>
+      <div class="box"><div class="ico">💬</div><h4>ChatStream</h4><p>消息流 + 待审核回复<br/>批准 / 驳回 / 候选详情</p></div>
+      <div class="box"><div class="ico">🧪</div><h4>DirectChat</h4><p>直接与生成器对话<br/>验证 LLM / RAG 策略</p></div>
+    </div>
+  </div>
+
+  <!-- 前端 <-> 后端 连接 -->
+  <div class="v-link" style="height: 64px;">
+    <div class="v-arrow down">
+      <div class="stem"></div><div class="head"></div>
+      <div class="v-label">HTTP REST · /api/*（vite 代理）</div>
+    </div>
+    <div class="v-arrow up">
+      <div class="stem"></div><div class="head"></div>
+      <div class="v-label">WebSocket /ws · 实时事件 message / reply / status</div>
+    </div>
+  </div>
+
+  <!-- ===================== 后端层 ===================== -->
+  <div class="layer be">
+    <div class="layer-title">⚙️ 后端 Backend <small>Python 3.12 · FastAPI · http://127.0.0.1:8000 · backend/app/</small></div>
+
+    <div class="be-cols">
+      <!-- 左：连接器 -->
+      <div class="col">
+        <div class="col-title">连 接 器 层 · 监 听</div>
+        <div class="box">
+          <h4>WeChatConnector <span class="badge b-green">mock</span><span class="badge b-blue">wxauto</span></h4>
+          <ul>
+            <li><b>监听循环</b> <span class="code">_poll_loop()</span> 每 1s 轮询</li>
+            <li>poll() 拾取新消息，立即回调</li>
+            <li>send_reply() 回填微信（wxauto UI 自动化）</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h4>DingTalkCliConnector <span class="badge b-green">mock</span><span class="badge b-blue">cli</span></h4>
+          <ul>
+            <li>执行钉钉 CLI 拉取 NDJSON 新消息</li>
+            <li>reply_command 模板发送回复<br/><span class="code">{chat_id} {sender} {content}</span></li>
+          </ul>
+        </div>
+        <div class="box">
+          <h4>BaseConnector <span class="badge b-gray">抽象基类</span></h4>
+          <ul><li>统一生命周期 start/stop、轮询循环、错误降级</li></ul>
+        </div>
+      </div>
+
+      <div class="h-arrows">
+        <div class="h-arrow right"><span class="tag">新消息 poll()</span></div>
+        <div class="h-arrow left"><span class="tag">send_reply()</span></div>
+      </div>
+
+      <!-- 中：核心调度 -->
+      <div class="col">
+        <div class="col-title">核 心 调 度 · AgentService</div>
+        <div class="box" style="flex:1;">
+          <h4>app/core/agent.py</h4>
+          <ul>
+            <li><b>ingest()</b> 新消息入口：去重 → 存储 → 广播</li>
+            <li><b>_handle()</b> 监听到消息即调用引擎生成回复</li>
+            <li><b>approve() / reject()</b> 人工审核后发送或驳回</li>
+            <li><b>_dispatch()</b> 经连接器发回平台</li>
+            <li><b>direct_chat()</b> 前端对话测试直连引擎</li>
+          </ul>
+          <div class="pipe">
+            <span class="step">新消息<em>ingest</em></span><span class="pa">→</span>
+            <span class="step">生成回复<em>engine.generate</em></span><span class="pa">→</span>
+            <span class="step">待审核<em>pending</em></span><span class="pa">→</span>
+            <span class="step">发送<em>dispatch</em></span>
+          </div>
+        </div>
+        <div class="box">
+          <h4>MessageStore <span class="badge b-gray">内存存储</span>　EventBus <span class="badge b-gray">事件总线</span></h4>
+          <ul><li>会话上下文 / 消息检索　·　向所有 WebSocket 订阅者广播事件</li></ul>
+        </div>
+      </div>
+
+      <div class="h-arrows">
+        <div class="h-arrow right"><span class="tag">generate()</span></div>
+        <div class="h-arrow left"><span class="tag">GenerationResult</span></div>
+      </div>
+
+      <!-- 右：生成引擎 -->
+      <div class="col">
+        <div class="col-title">回 复 生 成 引 擎</div>
+        <div class="box" style="flex:1;">
+          <h4>«interface» ReplyGenerator <span class="badge b-gray">抽象接口 · 需求②</span></h4>
+          <ul>
+            <li>只需继承此接口即可扩展新实现</li>
+            <li>输入：新消息 + 会话历史 → 输出：候选 + 元信息</li>
+          </ul>
+          <div class="impls">
+            <div class="box impl"><h4>MockReplyGenerator <span class="badge b-green">默认</span></h4>
+              <ul><li>关键词规则回复，零依赖，测试用</li></ul></div>
+            <div class="box impl"><h4>LLMReplyGenerator <span class="badge b-blue">DeepSeek</span></h4>
+              <ul><li>OpenAI 兼容 Chat Completions，生成 N 条候选</li></ul></div>
+            <div class="box impl" style="border-left-color: var(--dim); border-style: dashed;"><h4>RagReplyGenerator <span class="badge b-orange">预留</span></h4>
+              <ul><li>后续 RAG / 知识库实现挂载点</li></ul></div>
+          </div>
+        </div>
+        <div class="box">
+          <h4>LLM 生成管线（参考 jev-chat 流程）</h4>
+          <div class="engine-flow">
+            <div class="ef-row">
+              <div class="ef dashed"><b>JEV 预判</b><small>风险/意图/建议（可选）</small></div>
+              <span class="pa" style="align-self:center;">→</span>
+              <div class="ef"><b>LLM 生成候选</b><small>1~N 条不同语气</small></div>
+              <span class="pa" style="align-self:center;">→</span>
+              <div class="ef dashed"><b>JEV 复审</b><small>打分/排序/门禁（可选）</small></div>
+            </div>
+            <div class="ef-row" style="margin-top:5px;">
+              <div class="ef" style="flex:2;"><b>不合格 → 自动重写一次</b><small>携带复审原因反馈给 LLM</small></div>
+              <span class="pa" style="align-self:center;">→</span>
+              <div class="ef"><b>🚫 仍不合格 → 拦截</b><small>blocked，可人工强制发送</small></div>
+            </div>
+          </div>
+        </div>
+        <div class="box">
+          <h4>JEVJudge <span class="badge b-purple">可选模块</span></h4>
+          <ul>
+            <li><b>MockJEVJudge</b> 本地规则（敏感词/风险分级），零依赖</li>
+            <li><b>TypeSafeJEVJudge</b> 官方 <span class="code">POST /v1/systemone</span>，失败自动降级不阻塞</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 后端 <-> 外部 -->
+  <div class="v-link" style="height: 62px;">
+    <div class="v-arrow down"><div class="stem"></div><div class="head"></div><div class="v-label">wxauto UI 自动化</div></div>
+    <div class="v-arrow down"><div class="stem"></div><div class="head"></div><div class="v-label">CLI 子进程 / NDJSON</div></div>
+    <div class="v-arrow down"><div class="stem"></div><div class="head"></div><div class="v-label">HTTPS · Chat Completions</div></div>
+    <div class="v-arrow down"><div class="stem"></div><div class="head"></div><div class="v-label">HTTPS · /v1/systemone</div></div>
+  </div>
+
+  <!-- ===================== 外部依赖 ===================== -->
+  <div class="layer" style="background: var(--panel); border: 1px solid var(--border);">
+    <div class="layer-title">🌐 外部依赖 <small>默认 mock 模式，全部可离线运行</small></div>
+    <div class="ext-grid">
+      <div class="box ext on-wechat"><div class="ico">💚</div><h4>微信桌面端</h4><p>wxauto 开源 UI 自动化<br/>监听会话 / 发送消息<br/><span class="badge b-green">mode: wxauto</span></p></div>
+      <div class="box ext on-blue"><div class="ico">💙</div><h4>钉钉 CLI</h4><p>外部命令行工具<br/>拉取记录 / 发送消息<br/><span class="badge b-blue">mode: cli</span></p></div>
+      <div class="box ext on-purple"><div class="ico">🧠</div><h4>DeepSeek API</h4><p>OpenAI 兼容接口<br/>生成回复候选<br/>engine=llm 时启用</p></div>
+      <div class="box ext on-purple"><div class="ico">🛡️</div><h4>TypeSafe JEV API</h4><p>结构化预判 + 复审排序<br/>jev.provider=typesafe<br/>可关闭，关闭时 LLM 兜底</p></div>
+    </div>
+  </div>
+
+  <!-- ===================== 消息生命周期 ===================== -->
+  <div class="lifecycle">
+    <h2>🔄 一条消息的完整生命周期</h2>
+    <div class="sub">需求①：一旦监听到新消息，立即触发生成回复 —— 全程毫秒级，无需人工干预</div>
+    <div class="lc-grid">
+      <div class="lc"><span class="num">1</span><h5>新消息到达</h5><p>对方在微信/钉钉发来消息（或通过前端模拟面板注入）</p><span class="where">WeChat / DingTalk</span></div>
+      <div class="lc"><span class="num">2</span><h5>连接器拾取</h5><p>监听循环 poll() 抓到新消息，回调 AgentService</p><span class="where">BaseConnector._poll_loop</span></div>
+      <div class="lc"><span class="num">3</span><h5>入口处理</h5><p>去重 → 写入 MessageStore → EventBus 广播给前端</p><span class="where">AgentService.ingest()</span></div>
+      <div class="lc"><span class="num">4</span><h5>生成回复</h5><p>JEV 预判（可选）→ 引擎生成候选 → JEV 复审排序（可选）→ 不合格重写一次</p><span class="where">ReplyGenerator.generate()</span></div>
+      <div class="lc orange"><span class="num">5</span><h5>待审核</h5><p>回复入库（pending / blocked）并实时推送到前端页面</p><span class="where">auto_send=false 默认</span></div>
+      <div class="lc green"><span class="num">6</span><h5>发送回平台</h5><p>人工批准后（或 auto_send=true）经连接器 send_reply 发回微信/钉钉</p><span class="where">approve() → send_reply()</span></div>
+    </div>
+  </div>
+
+  <!-- ===================== 需求映射 ===================== -->
+  <div class="req">
+    <div class="box">
+      <h4>📌 需求① 一旦监听到新消息，就触发生成回复</h4>
+      <ul>
+        <li>每个连接器独立 <b>监听循环</b>（poll 间隔可配置，默认 1s）</li>
+        <li>poll 到消息立即同步回调 <b>ingest → generate</b>，无队列延迟</li>
+        <li>前端通过 <b>WebSocket</b> 实时看到消息与回复</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h4>📌 需求② 生成回复先做接口，后续可换 RAG 等复杂实现</h4>
+      <ul>
+        <li><b>ReplyGenerator</b> 抽象接口：generate(message, history) → GenerationResult</li>
+        <li>已实现：Mock（规则）、LLM（DeepSeek + JEV 全链路）</li>
+        <li>扩展：继承接口 → 在 <span class="code">build_engine()</span> 注册即可，其余代码零改动</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>ChatAgent · 参考 jev-chat-windows-deepseek-jev 处理流程 · 前后端分离 · 测试全部通过（31 单元测试 + 14 端到端模拟）</footer>
+</div>
+</body>
+</html>
