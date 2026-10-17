@@ -110,6 +110,7 @@ class ConfigUpdateRequest(BaseModel):
     num_candidates: Optional[int] = None
     temperature: Optional[float] = None
     llm_max_retries: Optional[int] = None
+    llm_style: Optional[str] = None  # 回复风格预设：default | formal | concise | casual | friendly
     group_trigger: Optional[str] = None  # at-mention | all | listen-only
     non_text_action: Optional[str] = None  # placeholder | skip
     debounce_seconds: Optional[float] = None
@@ -117,5 +118,6 @@ class ConfigUpdateRequest(BaseModel):
     alert_channel: Optional[str] = None  # off | wechat-filehelper | dingtalk-self
     alert_dingtalk_chat_id: Optional[str] = None
     allowed_contacts: Optional[list[str]] = None
+    knowledge_dir: Optional[str] = None  # RAG 知识库目录（空字符串 = 停用）
     auto_send: Optional[bool] = None  # 自动发送开关（默认人工确认）
     persist: bool = False

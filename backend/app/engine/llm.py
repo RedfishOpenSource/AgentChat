@@ -16,6 +16,7 @@ import httpx
 
 from ..config import LLMSettings
 from ..models import ChatMessage
+from ..rag import Chunk, KnowledgeBase
 from .base import Candidate, GenerationResult, ReplyGenerator
 from .jev import JEVPrefilter, JEVJudge
 
@@ -27,6 +28,15 @@ _SYSTEM_PROMPT = (
     "涉及转账、红包、付款、密码、验证码等资金或敏感操作时，必须明确拒绝并提醒风险。"
 )
 
+# 回复风格预设（llm.style）：追加到系统提示词；default 用内置默认语气
+STYLE_PRESETS: dict[str, str] = {
+    "default": "",  # 内置默认：口语化、简洁、礼貌
+    "formal": "正式、专业、礼貌，用词严谨规范，适合工作场合沟通；不使用表情符号。",
+    "concise": "极简高效：一两条短句说完，不寒暄不铺垫，直接给结论或行动项。",
+    "casual": "轻松口语化，像朋友聊天，可以适当用语气词和 emoji。",
+    "friendly": "热情友好，语气亲切自然，让对方感到被重视；结尾可主动提供进一步帮助。",
+}
+
 
 class LLMReplyGenerator(ReplyGenerator):
     name = "llm"
@@ -37,10 +47,12 @@ class LLMReplyGenerator(ReplyGenerator):
         jev: JEVJudge | None = None,
         rewrite_on_fail: bool = True,
         transport: httpx.AsyncBaseTransport | None = None,
+        kb: KnowledgeBase | None = None,
     ) -> None:
         self.cfg = cfg
         self.jev = jev
         self.rewrite_on_fail = rewrite_on_fail
+        self.kb = kb  # RAG 知识库（可选）：检索结果注入用户提示词
         self._client = httpx.AsyncClient(timeout=cfg.timeout, transport=transport)
 
     # ---------- LLM 调用 ----------
@@ -87,12 +99,18 @@ class LLMReplyGenerator(ReplyGenerator):
         raise last_exc
 
     # ---------- 提示词 ----------
+    def _system_prompt(self) -> str:
+        """系统提示词：内置基础要求 + 风格预设（llm.style，热更新即时生效）。"""
+        style = STYLE_PRESETS.get((self.cfg.style or "default").strip(), "")
+        return f"{_SYSTEM_PROMPT}\n回复风格要求：{style}" if style else _SYSTEM_PROMPT
+
     def _build_user_prompt(
         self,
         message: ChatMessage,
         history: Sequence[ChatMessage],
         assessment: JEVPrefilter | None,
         feedback: str = "",
+        rag_hits: list[tuple[float, Chunk]] | None = None,
     ) -> str:
         lines = ["以下是最近的聊天记录（最后一条是需要回复的新消息）："]
         for m in list(history)[-self.cfg.max_history:]:
@@ -108,6 +126,10 @@ class LLMReplyGenerator(ReplyGenerator):
                 f"对方需要: {assessment.user_need}",
                 f"建议行动: {assessment.suggested_action}",
             ]
+        if rag_hits:
+            lines += ["", "[知识库参考资料]（可参考以下内容回复；资料中没有的信息不要编造）"]
+            for _, chunk in rag_hits:
+                lines.append(f"- {chunk.text}")
         if feedback:
             lines += ["", f"[注意] 上一轮候选未通过质量复审（原因：{feedback}），请重新生成更合适的回复。"]
 
@@ -179,9 +201,12 @@ class LLMReplyGenerator(ReplyGenerator):
         if jev_on:
             assessment = await self.jev.pre_judge(message, history)  # type: ignore[union-attr]
 
+        # RAG 知识库检索（可选）：只检索一次，供初始生成与重写复用
+        rag_hits = self.kb.search(message.content) if self.kb is not None else []
+
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": self._build_user_prompt(message, history, assessment)},
+            {"role": "system", "content": self._system_prompt()},
+            {"role": "user", "content": self._build_user_prompt(message, history, assessment, rag_hits=rag_hits)},
         ]
         raw = await self._chat_with_retry(messages)
         contents = self._parse_candidates(raw) or [raw.strip()]
@@ -194,6 +219,8 @@ class LLMReplyGenerator(ReplyGenerator):
             "jev": jev_on,
             "assessment": assessment.__dict__ if assessment else None,
         }
+        if rag_hits:
+            meta["rag"] = sorted({c.file for _, c in rag_hits})  # 引用的知识库文件
 
         # 2) JEV 复审 + 排序（可选），不合格时重写一次
         if jev_on and candidates:
@@ -211,7 +238,9 @@ class LLMReplyGenerator(ReplyGenerator):
             if best is None and self.rewrite_on_fail:
                 reasons = "；".join(x for x in (review.reasons if review else []) if x) or "质量复审未通过"
                 meta["rewritten"] = True
-                messages[1]["content"] = self._build_user_prompt(message, history, assessment, feedback=reasons)
+                messages[1]["content"] = self._build_user_prompt(
+                    message, history, assessment, feedback=reasons, rag_hits=rag_hits
+                )
                 raw2 = await self._chat_with_retry(messages, temperature=min(1.2, self.cfg.temperature + 0.2))
                 contents2 = self._parse_candidates(raw2) or [raw2.strip()]
                 candidates = [Candidate(content=c) for c in contents2]

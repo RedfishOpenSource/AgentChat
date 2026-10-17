@@ -10,6 +10,7 @@ const saving = ref(false)
 const form = reactive({
   engine: 'mock',
   num_candidates: 1,
+  llm_style: 'default',
   group_trigger: 'at-mention',
   non_text_action: 'placeholder',
   debounce_seconds: 3.0,
@@ -21,6 +22,7 @@ watch(
     if (!c) return
     form.engine = c.engine || 'mock'
     form.num_candidates = c.llm?.num_candidates ?? 1
+    form.llm_style = c.llm?.style || 'default'
     form.group_trigger = c.group_trigger || 'at-mention'
     form.non_text_action = c.non_text_action || 'placeholder'
     form.debounce_seconds = c.debounce_seconds ?? 3.0
@@ -35,6 +37,7 @@ async function save() {
     await emit('save', {
       engine: form.engine,
       num_candidates: Number(form.num_candidates),
+      llm_style: form.llm_style,
       group_trigger: form.group_trigger,
       non_text_action: form.non_text_action,
       debounce_seconds: Number(form.debounce_seconds),
@@ -62,6 +65,16 @@ async function save() {
         <label>
           候选数量（1-5）
           <input v-model.number="form.num_candidates" type="number" min="1" max="5" />
+        </label>
+        <label>
+          回复风格（LLM）
+          <select v-model="form.llm_style">
+            <option value="default">默认（口语化、简洁、礼貌）</option>
+            <option value="formal">正式专业</option>
+            <option value="concise">极简高效</option>
+            <option value="casual">轻松口语</option>
+            <option value="friendly">热情友好</option>
+          </select>
         </label>
         <label>
           群聊触发

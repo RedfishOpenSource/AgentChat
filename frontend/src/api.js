@@ -31,6 +31,9 @@ export const api = {
   chat: (body) => req('/chat', { method: 'POST', body: JSON.stringify(body) }),
   connector: (platform, action) => req(`/connectors/${platform}/${action}`, { method: 'POST' }),
   setContacts: (list) => req('/contacts', { method: 'PUT', body: JSON.stringify({ allowed_contacts: list }) }),
+  knowledge: () => req('/knowledge'),
+  rescanKnowledge: () => req('/knowledge/scan', { method: 'POST' }),
+  listDirs: (path = '') => req(`/fs/dirs?path=${encodeURIComponent(path)}`),
 }
 
 export function connectWS(onEvent, onState) {

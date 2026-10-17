@@ -10,7 +10,7 @@ from app.config import LLMSettings
 from app.engine import MockReplyGenerator
 from app.engine.base import Candidate
 from app.engine.jev import MockJEVJudge
-from app.engine.llm import LLMReplyGenerator
+from app.engine.llm import LLMReplyGenerator, STYLE_PRESETS, _SYSTEM_PROMPT
 from app.models import ChatMessage, Platform
 
 
@@ -99,4 +99,48 @@ async def test_llm_engine_jev_passes_normal_reply():
     result = await engine.generate(make_msg("你好"), [])
     assert result.blocked is False
     assert result.candidates[0].passed is True
+    await engine.aclose()
+
+
+# ---------------- 回复风格预设 ----------------
+def test_llm_style_default_prompt_untouched():
+    """style=default：系统提示词保持内置默认，不追加风格段。"""
+    engine = LLMReplyGenerator(LLMSettings(api_key="t"))
+    assert engine._system_prompt() == _SYSTEM_PROMPT
+
+
+def test_llm_style_all_presets_injected():
+    """全部预设都会把风格要求拼进系统提示词，且互不相同。"""
+    prompts = {}
+    for name, desc in STYLE_PRESETS.items():
+        if not desc:
+            continue
+        engine = LLMReplyGenerator(LLMSettings(api_key="t", style=name))
+        p = engine._system_prompt()
+        assert p.startswith(_SYSTEM_PROMPT)
+        assert desc in p
+        prompts[name] = p
+    assert len(set(prompts.values())) == len(prompts)
+
+
+def test_llm_style_unknown_falls_back_to_default():
+    """未知风格名回退默认提示词（不报错）。"""
+    engine = LLMReplyGenerator(LLMSettings(api_key="t", style="不存在的风格"))
+    assert engine._system_prompt() == _SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_llm_style_sent_in_request():
+    """generate() 实际发出的 system 消息带风格要求。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        captured["system"] = body["messages"][0]["content"]
+        return httpx.Response(200, json={"choices": [{"message": {"content": "收到"}}]})
+
+    cfg = LLMSettings(api_key="t", base_url="http://llm.test", style="formal")
+    engine = LLMReplyGenerator(cfg, transport=httpx.MockTransport(handler))
+    await engine.generate(make_msg("你好"), [])
+    assert "正式、专业" in captured["system"]
     await engine.aclose()

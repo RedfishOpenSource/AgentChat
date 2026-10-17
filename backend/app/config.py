@@ -36,6 +36,7 @@ class LLMSettings:
     max_history: int = 12
     max_retries: int = 2  # 失败重试次数（对超时/5xx/429）；总尝试 = 1 + max_retries
     retry_backoff: float = 1.0  # 重试退避基数（秒），指数递增
+    style: str = "default"  # 回复风格预设：default | formal | concise | casual | friendly
 
 
 @dataclass
@@ -64,6 +65,7 @@ class ConnectorSettings:
     listen_kind: str = "at-me"  # dingtalk dws: at-me | all-direct | all-group | group
     dws_bin: str = "dws"  # dingtalk dws: DWS CLI 可执行文件路径
     reply_mode: str = "quote"  # dingtalk dws: quote(引用回复) | plain(直接发送)
+    group_reply: str = "quote-at"  # wechat replica 群聊回复: quote-at(引用原消息+文本@触发者) | plain(直发)
 
 
 @dataclass
@@ -83,6 +85,7 @@ class Settings:
     non_text_action: str = "placeholder"  # 非文本消息：placeholder(生成提示草稿) | skip(直接忽略)
     llm_rate_limit_per_chat: int = 10  # 每会话每分钟最多生成次数（0 = 不限），超出忽略并记录原因
     allowed_contacts: list[str] = field(default_factory=list)  # 联系人白名单（会话名）；空 = 允许全部；["*"] = 全部
+    knowledge_dir: str = ""  # RAG 知识库目录（.md/.txt）；空 = 未启用；前端目录选择器设置
     # ---- 监控告警（告警消息发给你自己，默认关闭） ----
     alert_channel: str = "off"  # off | wechat-filehelper | dingtalk-self
     alert_dingtalk_chat_id: str = ""  # dingtalk-self 目标会话 ID
@@ -113,7 +116,7 @@ def _find_config_file(explicit: str | None) -> Path | None:
 
 def _apply_connector(data: dict[str, Any], cs: ConnectorSettings) -> None:
     for key in ("enabled", "mode", "auto_start", "poll_interval", "command", "reply_command",
-                "listen_chats", "listen_kind", "dws_bin", "reply_mode"):
+                "listen_chats", "listen_kind", "dws_bin", "reply_mode", "group_reply"):
         if key in data:
             setattr(cs, key, data[key])
 
@@ -127,7 +130,7 @@ def load_settings(config_path: str | None = None) -> Settings:
 
     if isinstance(data.get("llm"), dict):
         for key in ("api_key", "base_url", "model", "temperature", "timeout", "num_candidates",
-                    "max_history", "max_retries", "retry_backoff"):
+                    "max_history", "max_retries", "retry_backoff", "style"):
             if key in data["llm"]:
                 setattr(s.llm, key, data["llm"][key])
     if isinstance(data.get("jev"), dict):
@@ -140,7 +143,7 @@ def load_settings(config_path: str | None = None) -> Settings:
     for key in ("engine", "max_store", "host", "port", "db_path", "debounce_seconds",
                 "group_trigger", "non_text_action", "alert_channel", "alert_dingtalk_chat_id",
                 "alert_min_interval", "alert_check_interval", "llm_failure_threshold",
-                "log_file", "static_dir", "auto_send"):
+                "log_file", "static_dir", "auto_send", "knowledge_dir"):
         if key in data:
             setattr(s, key, data[key])
     for list_key in ("allowed_ips", "allowed_contacts"):
@@ -194,6 +197,8 @@ def load_settings(config_path: str | None = None) -> Settings:
     s.llm.api_key = env(_ENV_PREFIX + "LLM_API_KEY", s.llm.api_key)
     s.llm.base_url = env(_ENV_PREFIX + "LLM_BASE_URL", s.llm.base_url)
     s.llm.model = env(_ENV_PREFIX + "LLM_MODEL", s.llm.model)
+    s.llm.style = env(_ENV_PREFIX + "LLM_STYLE", s.llm.style)
+    s.knowledge_dir = env(_ENV_PREFIX + "KNOWLEDGE_DIR", s.knowledge_dir)
 
     s.jev.enabled = _as_bool(env(_ENV_PREFIX + "JEV_ENABLED"), s.jev.enabled)
     s.jev.provider = env(_ENV_PREFIX + "JEV_PROVIDER", s.jev.provider)
@@ -203,6 +208,7 @@ def load_settings(config_path: str | None = None) -> Settings:
     s.jev.base_url = env(_ENV_PREFIX + "JEV_BASE_URL", s.jev.base_url)
 
     s.wechat.mode = env(_ENV_PREFIX + "WECHAT_MODE", s.wechat.mode)
+    s.wechat.group_reply = env(_ENV_PREFIX + "WECHAT_GROUP_REPLY", s.wechat.group_reply)
     s.dingtalk.mode = env(_ENV_PREFIX + "DINGTALK_MODE", s.dingtalk.mode)
     s.dingtalk.command = env(_ENV_PREFIX + "DINGTALK_COMMAND", s.dingtalk.command)
     s.dingtalk.reply_command = env(_ENV_PREFIX + "DINGTALK_REPLY_COMMAND", s.dingtalk.reply_command)

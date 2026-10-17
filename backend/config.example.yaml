@@ -3,6 +3,7 @@
 
 engine: mock          # mock | llm（llm 需配置 llm.api_key）
 auto_send: false      # 自动发送开关（默认关：仅生成草稿，人工确认后发送；可在前端按钮切换）
+knowledge_dir: ""     # RAG 知识库目录（.md/.txt，含子目录）；空 = 未启用；推荐在前端「知识库」面板用目录选择器设置
 debounce_seconds: 3.0 # 连发合并：静默 N 秒后才生成（同会话新消息重置计时）；0 = 关闭
 # 安全约束：本项目不支持自动发送。回复仅作为草稿生成（待确认），
 # 发送必须由人工在前端确认（可编辑草稿后发送）。
@@ -31,6 +32,8 @@ static_dir: ""                  # 前端构建产物目录；空 = 自动探测 
 allowed_ips: ["127.0.0.1", "::1"]
 
 llm:
+  # style: default                     # 回复风格预设：default(口语简洁礼貌) | formal(正式专业)
+  #                                   # concise(极简高效) | casual(轻松口语) | friendly(热情友好)
   api_key: ""                        # 或环境变量 CHATAGENT_LLM_API_KEY
   base_url: "https://api.deepseek.com"
   model: "deepseek-chat"
@@ -57,6 +60,7 @@ wechat:
   # mode=wxauto（旧版兼容，仅支持微信 3.9.x）
   listen_chats: []                   # 要监听的会话：昵称/备注均可，如 ["文件传输助手", "张三"]
   #                                 # 留空则默认只监听「文件传输助手」
+  group_reply: quote-at              # mode=replica 群聊回复：quote-at(引用原消息+文本@触发者，默认) | plain(直发)
 
 dingtalk:
   enabled: true

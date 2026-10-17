@@ -29,6 +29,7 @@ from ..models import (
     STATUS_SENT,
     type_label,
 )
+from ..rag import KnowledgeBase
 from ..store import EventBus, MessageStore
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class AgentService:
         engine: ReplyGenerator,
         jev: JEVJudge | None = None,
         alerts: AlertManager | None = None,
+        kb: KnowledgeBase | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -50,6 +52,7 @@ class AgentService:
         self.engine = engine
         self.jev = jev
         self.alerts = alerts or AlertManager()
+        self.kb = kb or KnowledgeBase()
         self.connectors: dict[Platform, BaseConnector] = {}
         # LLM 连续失败计数（告警用）
         self._llm_fail_streak = 0
@@ -208,9 +211,7 @@ class AgentService:
                 reply_to=incoming.id,
                 meta={"engine": "system", "placeholder": True, "msg_type": incoming.msg_type},
             )
-            dws_src = (incoming.meta or {}).get("dws")
-            if dws_src:
-                reply.meta = {**reply.meta, "dws": dws_src}
+            self._apply_reply_routing(reply, incoming)
             self.store.add(reply)
             self.bus.publish({"type": "reply", "message": reply.model_dump(mode="json")})
             logger.info("[agent] 非文本消息(%s)生成占位草稿 %s", incoming.msg_type, reply.id)
@@ -244,9 +245,7 @@ class AgentService:
                 reply_to=incoming.id,
                 meta={"engine": "error", "error": str(exc)[:200]},
             )
-            dws_src = (incoming.meta or {}).get("dws")
-            if dws_src:
-                reply.meta = {**reply.meta, "dws": dws_src}
+            self._apply_reply_routing(reply, incoming)
             self.store.add(reply)
             self.bus.publish({"type": "reply", "message": reply.model_dump(mode="json")})
             return
@@ -270,10 +269,8 @@ class AgentService:
             reply_to=incoming.id,
             meta=result.meta,
         )
-        # 透传连接器路由元数据（如钉钉 dws 的 message_id/conversation_id，供引用回复使用）
-        dws_src = (incoming.meta or {}).get("dws")
-        if dws_src:
-            reply.meta = {**result.meta, "dws": dws_src}
+        # 透传连接器发送路由元数据：钉钉 dws 引用回复 / 微信群聊引用+文本@
+        self._apply_reply_routing(reply, incoming)
         self.store.add(reply)
         self.bus.publish({"type": "reply", "message": reply.model_dump(mode="json")})
         logger.info(
@@ -283,6 +280,47 @@ class AgentService:
         )
         if status == STATUS_SENT:  # 仅普通草稿；blocked 永不自动发送
             await self._dispatch(reply)
+
+    def _wechat_group_reply_meta(self, incoming: ChatMessage) -> dict | None:
+        """微信群聊 quote-at 回复元数据；非微信/非群聊/已关闭时返回 None。
+
+        meta 供 replica 连接器发送时走 quote_msg（引用原消息）；
+        at_sender 同时用于给草稿正文拼「@昵称 」前缀（WYSIWYG，批准即所见）。
+        """
+        if incoming.platform != Platform.WECHAT or not incoming.is_group:
+            return None
+        if getattr(self.settings.wechat, "group_reply", "quote-at") != "quote-at":
+            return None
+        sender = (incoming.sender or "").strip()
+        quote_text = incoming.content.strip()[:20]  # OCR 定位引用目标的短文案
+        if not sender or not quote_text:
+            return None
+        return {"at_sender": sender, "quote_text": quote_text}
+
+    def _apply_reply_routing(self, reply: ChatMessage, incoming: ChatMessage) -> None:
+        """透传连接器发送路由所需元数据。
+
+        - 钉钉 dws：message_id/conversation_id，供引用回复使用
+        - 微信群聊（quote-at）：附 wechat_reply 元数据，并把「@触发者 」前缀
+          写进草稿正文（前端可见可编辑；切换候选时由 _ensure_group_prefix 补回）
+        """
+        dws_src = (incoming.meta or {}).get("dws")
+        if dws_src:
+            reply.meta = {**reply.meta, "dws": dws_src}
+        wr = self._wechat_group_reply_meta(incoming)
+        if wr:
+            reply.meta = {**reply.meta, "wechat_reply": wr}
+            reply.content = self._ensure_group_prefix(reply, reply.content)
+
+    @staticmethod
+    def _ensure_group_prefix(reply: ChatMessage, content: str) -> str:
+        """给微信群聊回复补「@昵称 」前缀（已有则不动；候选原文不含前缀）。"""
+        wr = (reply.meta or {}).get("wechat_reply") or {}
+        sender = str(wr.get("at_sender") or "").strip()
+        if not sender:
+            return content
+        prefix = f"@{sender} "
+        return content if content.startswith(prefix) else prefix + content
 
     def _rate_limit_check(self, m: ChatMessage) -> str | None:
         """每会话每分钟生成次数限制；返回拒绝原因或 None。"""
@@ -343,6 +381,20 @@ class AgentService:
         if updates.get("llm_max_retries") is not None:
             s.llm.max_retries = max(0, int(updates["llm_max_retries"]))
             changed.append("llm_max_retries")
+        if updates.get("llm_style") is not None:
+            from ..engine.llm import STYLE_PRESETS  # noqa: PLC0415 —— 避免模块级循环依赖
+            if updates["llm_style"] not in STYLE_PRESETS:
+                raise ValueError(f"llm_style 仅支持 {' / '.join(STYLE_PRESETS)}")
+            s.llm.style = updates["llm_style"]  # 生成器持有同一 cfg 引用，热生效
+            changed.append("llm_style")
+        if updates.get("knowledge_dir") is not None:
+            path = str(updates["knowledge_dir"]).strip()
+            if path:
+                self.kb.configure(path)  # 目录不存在抛 ValueError → 400
+            else:
+                self.kb.reset()
+            s.knowledge_dir = path
+            changed.append("knowledge_dir")
 
         if updates.get("group_trigger") is not None:
             if updates["group_trigger"] not in ("at-mention", "all", "listen-only"):
@@ -383,7 +435,7 @@ class AgentService:
 
         if rebuild:
             old_engine, old_jev = self.engine, self.jev
-            self.engine, self.jev = build_engine(s)
+            self.engine, self.jev = build_engine(s, kb=self.kb)
             for closer in (old_engine, old_jev):
                 if closer is not None:
                     try:
@@ -491,6 +543,7 @@ class AgentService:
         content = str(cands[index].get("content") or "").strip()
         if not content:
             raise ValueError("该候选内容为空")
+        content = self._ensure_group_prefix(reply, content)
         if content != reply.content:
             reply.meta = {**reply.meta, "edited_from": reply.content}
         reply.content = content

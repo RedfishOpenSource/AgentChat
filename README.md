@@ -103,13 +103,30 @@ node ../scripts/ws-test.mjs                    # WebSocket 联调（需前后端
 
 ## 接入真实平台
 
-### 微信（wxauto，开源 UI 自动化）
+### 微信（wechatauto-replica，微信 4.x，推荐）
+
+基于 wechatauto-replica 库：监听走本地数据库增量轮询（不受窗口影响、重启不漏消息），发送走 UIA+OCR：
+
+```yaml
+wechat:
+  mode: replica
+  listen_chats: ["张三", "项目交流群"]   # 要监听的微信会话名
+  poll_interval: 1.0
+  group_reply: quote-at                 # 群聊回复：quote-at(默认) | plain
+```
+
+要求：Windows + 登录微信桌面端（4.1.12+） + `uv pip install wechatauto-replica`。未安装时启动连接器会明确报错，不影响其他模块。
+
+**群聊引用+@回复（quote-at，默认开启）**：群聊草稿正文自动带「@触发者 」前缀（人工可编辑，所见即所得），
+发送时自动引用触发的那条原消息（右键 → 引用）；引用定位失败自动回退直发，回复不丢失。
+设 `group_reply: plain` 恢复直发。
+
+### 微信（wxauto，旧版兼容，仅微信 3.9.x）
 
 ```yaml
 wechat:
   mode: wxauto
-  listen_chats: ["张三", "项目交流群"]   # 要监听的微信会话名
-  poll_interval: 1.0
+  listen_chats: ["张三", "项目交流群"]
 ```
 
 要求：Windows + 登录微信桌面端 + `uv pip install wxauto`。未安装时启动连接器会明确报错，不影响其他模块。
@@ -174,8 +191,10 @@ jev:
 | `CHATAGENT_LLM_API_KEY` | LLM 密钥 | 空 |
 | `CHATAGENT_LLM_BASE_URL` | OpenAI 兼容地址 | https://api.deekseek.com |
 | `CHATAGENT_LLM_MODEL` | 模型名 | deepseek-chat |
+| `CHATAGENT_LLM_STYLE` | 回复风格预设：default / formal / concise / casual / friendly | default |
+| `CHATAGENT_KNOWLEDGE_DIR` | RAG 知识库目录（.md/.txt）；空 = 未启用 | 空 |
 | `CHATAGENT_JEV_ENABLED` / `CHATAGENT_JEV_PROVIDER` / `CHATAGENT_JEV_API_KEY` | JEV 开关/实现/密钥 | false / mock / 空 |
-| `CHATAGENT_WECHAT_MODE` | mock / wxauto | mock |
+| `CHATAGENT_WECHAT_MODE` / `CHATAGENT_WECHAT_GROUP_REPLY` | 微信连接器模式 / 群聊回复方式 | mock / quote-at |
 | `CHATAGENT_DINGTALK_MODE` / `CHATAGENT_DINGTALK_DWS_BIN` / `CHATAGENT_DINGTALK_LISTEN_KIND` / `CHATAGENT_DINGTALK_REPLY_MODE` | 钉钉 dws 模式配置 | mock / dws / at-me / quote |
 
 ## 访问控制（无登录方案）
@@ -189,9 +208,21 @@ jev:
 
 `PUT /api/config`（前端「设置」面板）可运行时修改并立即生效：
 
-- 回复引擎（mock ↔ llm）、JEV 开关/实现、候选数量、温度、重试次数
+- 回复引擎（mock ↔ llm）、JEV 开关/实现、候选数量、温度、重试次数、**回复风格预设**
 - 群聊触发策略、非文本处理、连发合并时长、每会话生成限额、联系人白名单、告警渠道
+- **知识库目录**（前端「知识库」面板选择，或 PUT /api/config 的 `knowledge_dir`）
 - `persist: true` 时同步写回配置文件（`jev_api_key` 除外，不落盘）；连接器模式与监听地址等需重启
+
+## RAG 知识库回复
+
+让回复参考你自己的文档：前端「知识库（RAG）」面板 → 「选择目录」（服务端目录选择器，支持盘符/文件夹逐级浏览）
+→ 后端扫描 `.md` / `.txt`（含子目录，UTF-8 / GBK 自动识别）并建立中文 bigram 倒排索引。
+
+- **生成时**：自动检索与触发消息最相关的分块（top-4，TF-IDF 打分，至少命中 2 个词组才注入），
+  以「[知识库参考资料]」段落拼进 LLM 提示词，并提示「资料中没有的信息不要编造」；引用了哪些文件记录在草稿 `meta.rag`
+- **更新**：目录内容变化会在下次生成时自动重扫（冷却 5 秒防抖）；也可手动点「重新扫描」
+- **开关**：面板「停用」或 `knowledge_dir: ""`；仅 engine=llm 时生效，mock 引擎不受影响
+- 零外部依赖（无需向量库/Embedding API）；语义向量检索可作为后续扩展
 
 ## 监控告警
 
@@ -256,8 +287,8 @@ jev:
 ## 测试结果
 
 ```
-backend 单元/接口测试:  101 passed（含连接器、持久化、白名单、连发合并、场景策略、LLM 韧性、告警、热更新、静态托管）
-端到端模拟 simulate.py: 15 passed, 0 failed
+backend 单元/接口测试:  115 passed（含连接器、持久化、白名单、连发合并、场景策略、LLM 韧性、告警、热更新、静态托管、微信群聊引用+@回复）
+端到端模拟 simulate.py: 16 passed, 0 failed
 钉钉真机验证:           真实群@消息 → 事件触发 → 生成回复 → 批准 → 引用回复送达 ✅
 前端 vite build:        OK
 ```
@@ -266,4 +297,4 @@ backend 单元/接口测试:  101 passed（含连接器、持久化、白名单�
 
 - 本项目仅参考了 jev-chat-windows-deepseek-jev 的**处理流程设计**（预判→生成→复审→人工可控），代码为全新实现，未使用其源码。
 - 请仅在有权查看的聊天场景中使用；涉及转账、红包、密码等内容默认被 JEV 门禁拦截。
-- TODO / Roadmap：RAG 知识库回复实现（继承 `ReplyGenerator`）、微信群聊@回复对象、回复风格预设、对话上下文持久化。
+- TODO / Roadmap：语义向量检索（Embedding）、微信群聊真实 @（选人弹窗强提醒，现为文本 @）。

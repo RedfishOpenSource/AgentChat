@@ -1,6 +1,9 @@
 """REST API 路由。"""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request
 
 from ..config import mask_settings, save_config_partial
@@ -97,11 +100,13 @@ async def update_config(request: Request, body: ConfigUpdateRequest):
         if jev_keys:
             yaml_updates["jev"] = jev_keys  # jev_api_key 不写盘
         llm_keys = {k: updates[k] for k in ("num_candidates", "temperature", "llm_max_retries") if k in updates}
+        if "llm_style" in updates:
+            llm_keys["style"] = updates["llm_style"]
         if llm_keys:
             yaml_updates["llm"] = llm_keys
         for k in ("group_trigger", "non_text_action", "debounce_seconds",
                   "llm_rate_limit_per_chat", "alert_channel", "alert_dingtalk_chat_id",
-                  "allowed_contacts"):
+                  "allowed_contacts", "knowledge_dir"):
             if k in updates:
                 yaml_updates[k] = updates[k]
         save_config_partial(yaml_updates, agent.settings.config_file)
@@ -117,6 +122,60 @@ async def update_config(request: Request, body: ConfigUpdateRequest):
 @router.get("/config")
 async def get_config(request: Request):
     return mask_settings(_agent(request).settings)
+
+
+# ---- RAG 知识库 ----
+@router.get("/knowledge")
+async def knowledge_stats(request: Request):
+    """知识库状态：路径/文件数/分块数/最近扫描时间。"""
+    return _agent(request).kb.stats()
+
+
+@router.post("/knowledge/scan")
+async def knowledge_rescan(request: Request):
+    """强制重扫知识库目录（改了文件后可手动触发；生成时也会自动检测）。"""
+    return _agent(request).kb.scan(force=True)
+
+
+def _system_roots() -> list[str]:
+    """列出系统根目录。Windows 用 GetLogicalDrives 位掩码（零 I/O，逐个探测盘符会很慢）。"""
+    if sys.platform == "win32":
+        import ctypes
+
+        mask = int(ctypes.windll.kernel32.GetLogicalDrives())
+        return [f"{chr(65 + i)}:\\" for i in range(26) if mask >> i & 1]
+    return [str(Path.home())]
+
+
+def _known_anchor(path: Path) -> bool:
+    """盘符/根是否存在于系统根列表（未知盘符直接拒绝，避免阻塞式 is_dir 探测）。"""
+    anchor = path.anchor
+    if not anchor:
+        return True  # 相对路径无 anchor，交由后续 is_dir 判断
+    roots = _system_roots()
+    return not roots or any(anchor.lower() == r.lower() for r in roots)
+
+
+@router.get("/fs/dirs")
+async def list_dirs(request: Request, path: str = ""):
+    """列出目录下的子文件夹（前端目录选择器用）；path 为空时返回盘符根（Windows）。"""
+    if not path.strip():
+        return {"path": "", "parent": None, "dirs": _system_roots()}
+    p = Path(path).expanduser()
+    if not _known_anchor(p) or not p.is_dir():
+        raise HTTPException(status_code=400, detail=f"目录不存在: {path}")
+    dirs: list[str] = []
+    try:
+        for child in p.iterdir():
+            try:
+                if child.is_dir() and not child.name.startswith("."):
+                    dirs.append(str(child))
+            except OSError:  # noqa: PERF203 —— 个别系统目录无权限，跳过
+                continue
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"无法读取目录: {exc}") from None
+    parent = str(p.parent) if p.parent != p else None
+    return {"path": str(p), "parent": parent, "dirs": sorted(dirs)}
 
 
 @router.get("/messages")

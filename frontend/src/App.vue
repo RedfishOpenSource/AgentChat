@@ -4,6 +4,7 @@ import { api, connectWS } from './api'
 import StatusPanel from './components/StatusPanel.vue'
 import SimulatorForm from './components/SimulatorForm.vue'
 import ContactPanel from './components/ContactPanel.vue'
+import KnowledgePanel from './components/KnowledgePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import ChatStream from './components/ChatStream.vue'
 import DirectChat from './components/DirectChat.vue'
@@ -164,6 +165,7 @@ onUnmounted(() => ws && ws.close())
     <aside class="sidebar">
       <StatusPanel :status="status" @action="onConnector" />
       <ContactPanel :contacts="status?.allowed_contacts || []" @save="onSaveContacts" />
+      <KnowledgePanel @notify="toast" />
       <SimulatorForm @send="onSimulate" />
       <SettingsPanel :config="config" @save="onSaveConfig" />
     </aside>

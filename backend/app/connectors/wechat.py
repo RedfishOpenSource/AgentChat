@@ -5,6 +5,9 @@
   支持微信 4.x（4.1.12+，实测 4.1.15.13）。
     * 监听：本地数据库增量轮询（Listener，水位落盘，重启不重复推送），不受窗口影响
     * 发送：UIA+OCR 混合驱动（仅在人工确认草稿后被调用）
+    * 群聊（group_reply=quote-at，默认）：quote_msg 引用原消息回复，
+      正文带「@触发者 」前缀（文本 @，粘贴输入不触发选人弹层）；
+      引用失败自动回退直发，回复不丢失
 - WeChatConnector (mode=wxauto)：经典 wxauto UI 自动化，仅支持微信 3.9.x（保留兼容）
 - MockConnector (mode=mock)：模拟，用于开发与测试
 """
@@ -210,18 +213,42 @@ class WeChatReplicaConnector(BaseConnector):
         return msgs
 
     # ---------- 发送（仅人工确认草稿后到达此处） ----------
+    @staticmethod
+    def _resp_ok(resp: Any) -> bool:
+        """wechatauto WxResponse 成功判定（兼容旧版 ok 字段）。"""
+        if resp is None:
+            return False
+        is_success = getattr(resp, "is_success", None)
+        if is_success is not None:
+            return bool(is_success)
+        return getattr(resp, "ok", None) is not False
+
     async def send_reply(self, message: ChatMessage) -> None:
         if self._gui is None:
-            from wechatauto import WeChat  # noqa: PLC0415 —— GUI 发送路径懒初始化
-            self._gui = WeChat()
+            from wechatauto.guia import WeChatGUI  # noqa: PLC0415 —— GUI 发送路径懒初始化
+            self._gui = WeChatGUI()
+        text = message.content
+        ctx = (message.meta or {}).get("wechat_reply") or {}
+        quote_text = str(ctx.get("quote_text") or "").strip()
+        # 群聊引用回复：右键原消息 → 菜单「引用」→ 输入（含 @前缀正文）→ 发送
+        if quote_text:
+            try:
+                resp = self._gui.quote_msg(text, who=message.chat_id, target_text=quote_text)
+                if self._resp_ok(resp):
+                    self._recent_sent.append((text.strip(), time.monotonic()))
+                    logger.info("[wechat] 已引用回复 -> chat=%s quote=%r: %s",
+                                message.chat_id, quote_text[:20], text[:50])
+                    return
+                logger.warning("[wechat] 引用回复失败，回退直发: %s", getattr(resp, "message", resp))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[wechat] 引用回复异常，回退直发: %s", exc)
         try:
-            resp = self._gui.SendMsg(message.content, who=message.chat_id)
-            ok = getattr(resp, "ok", None)
-            if ok is False:
+            resp = self._gui.send_msg(text, who=message.chat_id)
+            if self._resp_ok(resp) is False:
                 logger.warning("[wechat] 发送返回失败: %s", getattr(resp, "message", resp))
                 return
-            self._recent_sent.append((message.content.strip(), time.monotonic()))  # 回声比对记录
-            logger.info("[wechat] 已发送回复 -> chat=%s: %s", message.chat_id, message.content[:50])
+            self._recent_sent.append((text.strip(), time.monotonic()))  # 回声比对记录
+            logger.info("[wechat] 已发送回复 -> chat=%s: %s", message.chat_id, text[:50])
         except Exception as exc:  # noqa: BLE001
             logger.warning("[wechat] 发送失败: %s", exc)
 

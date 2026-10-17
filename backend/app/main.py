@@ -15,6 +15,7 @@ from .config import Settings, load_settings
 from .core.agent import AgentService
 from .engine import build_engine
 from .persistence import SqliteStore
+from .rag import KnowledgeBase
 from .security import IPAllowlistMiddleware
 from .store import EventBus, MessageStore
 
@@ -51,14 +52,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = MessageStore(max_size=settings.max_store, db=db)
     store.restore()  # 启动时恢复历史消息与未确认草稿
     bus = EventBus()
-    engine, jev = build_engine(settings)
+    kb = KnowledgeBase()
+    if settings.knowledge_dir.strip():
+        try:
+            kb.configure(settings.knowledge_dir)
+        except ValueError as exc:
+            logger.warning("知识库目录不可用，RAG 未启用: %s", exc)
+    engine, jev = build_engine(settings, kb=kb)
     alert_manager = AlertManager(
         notifier=build_notifier(settings.alert_channel, settings.alert_dingtalk_chat_id,
                                 dws_bin=settings.dingtalk.dws_bin),
         min_interval=settings.alert_min_interval,
     )
     agent = AgentService(settings=settings, store=store, bus=bus, engine=engine, jev=jev,
-                         alerts=alert_manager)
+                         alerts=alert_manager, kb=kb)
     agent.setup_connectors()
 
     @asynccontextmanager

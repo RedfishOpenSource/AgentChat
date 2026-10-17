@@ -83,6 +83,24 @@ def test_persist_writes_yaml(hot_client):
     assert s2.engine == "llm" and s2.group_trigger == "all"
 
 
+def test_llm_style_hot_apply_and_reject(hot_client):
+    """llm_style 热更新：合法值立即生效，非法值 400。"""
+    r = hot_client.put("/api/config", json={"llm_style": "formal"})
+    assert r.status_code == 200
+    assert "llm_style" in r.json()["changed"]
+    assert hot_client.get("/api/config").json()["llm"]["style"] == "formal"
+    assert hot_client.put("/api/config", json={"llm_style": "nope"}).status_code == 400
+
+
+def test_llm_style_persist_writes_yaml(hot_client):
+    r = hot_client.put("/api/config", json={"llm_style": "casual", "persist": True})
+    assert r.json()["persisted"] is True
+    cfg_file = hot_client.app.state.settings.config_file
+    data = yaml.safe_load(Path(cfg_file).read_text(encoding="utf-8"))
+    assert data["llm"]["style"] == "casual"
+    assert load_settings(cfg_file).llm.style == "casual"
+
+
 def test_persist_requires_config_file():
     settings = make_settings(config_file="")  # 测试默认无配置文件路径
     with TestClient(create_app(settings), client=("127.0.0.1", 12345)) as client:
