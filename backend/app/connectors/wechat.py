@@ -20,7 +20,7 @@ from collections import deque
 from typing import Any, Callable, Sequence
 
 from ..config import ConnectorSettings
-from ..models import ChatMessage, Platform, now_ms
+from ..models import ChatMessage, Platform, now_ms, type_label
 from .base import BaseConnector, ConnectorStartError, EmitFn
 
 logger = logging.getLogger(__name__)
@@ -53,11 +53,14 @@ def _parse_replica_msg(
     self_nick：当前登录账号昵称，用于群聊 @我 检测。回声过滤由 _is_echo 在回调层完成。
     """
     content = str(msg.get("content") or "").strip()
+    msg_type = _TYPE_MAP.get(str(msg.get("type") or ""), "text")
     if not content:
-        return None  # 系统行/空行跳过
+        if msg_type == "text":
+            return None  # 系统行/空行跳过
+        # 非文本消息（图片/语音等）内容常为空，不能丢弃——交由上游按占位/视觉策略处理
+        content = f"[{type_label(msg_type)}]"
     sender_id = msg.get("sender_id")
     sender_username = str(msg.get("sender_username") or "")
-    msg_type = _TYPE_MAP.get(str(msg.get("type") or ""), "text")
     is_group = username.endswith("@chatroom")
     at_me = bool(is_group and self_nick and f"@{self_nick}" in content)
     try:
@@ -69,6 +72,16 @@ def _parse_replica_msg(
         ts = int(float(ts) * 1000)
     except (TypeError, ValueError):
         ts = now_ms()
+    meta = {"replica": {"username": username, "sender_id": str(sender_id),
+                        "sender_username": sender_username,
+                        "raw_type": str(msg.get("type") or "")}}
+    # 图片消息：透传图片源（image_path/image_url），供可选的视觉识别模块使用
+    if msg_type == "image":
+        for key in ("image_path", "image_url", "image"):
+            v = str(msg.get(key) or "").strip()
+            if v:
+                meta["replica"][key] = v
+                break
     return ChatMessage(
         platform=Platform.WECHAT,
         chat_id=chat_name,
@@ -78,9 +91,7 @@ def _parse_replica_msg(
         msg_type=msg_type,
         at_me=at_me if is_group else None,
         is_group=is_group,
-        meta={"replica": {"username": username, "sender_id": str(sender_id),
-                          "sender_username": sender_username,
-                          "raw_type": str(msg.get("type") or "")}},
+        meta=meta,
     )
 
 

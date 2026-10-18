@@ -201,8 +201,8 @@ class LLMReplyGenerator(ReplyGenerator):
         if jev_on:
             assessment = await self.jev.pre_judge(message, history)  # type: ignore[union-attr]
 
-        # RAG 知识库检索（可选）：只检索一次，供初始生成与重写复用
-        rag_hits = self.kb.search(message.content) if self.kb is not None else []
+        # RAG 知识库检索（可选）：混合检索（词面+语义向量），只检索一次，供初始生成与重写复用
+        rag_hits = await self.kb.search_hybrid(message.content) if self.kb is not None else []
 
         messages = [
             {"role": "system", "content": self._system_prompt()},

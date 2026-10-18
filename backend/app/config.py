@@ -37,6 +37,26 @@ class LLMSettings:
     max_retries: int = 2  # 失败重试次数（对超时/5xx/429）；总尝试 = 1 + max_retries
     retry_backoff: float = 1.0  # 重试退避基数（秒），指数递增
     style: str = "default"  # 回复风格预设：default | formal | concise | casual | friendly
+    # ---- 图片理解（可选）：vision_model 为空 = 关闭；base_url/api_key 留空则复用上方对话模型配置 ----
+    vision_model: str = ""
+    vision_base_url: str = ""
+    vision_api_key: str = ""
+
+
+@dataclass
+class EmbeddingSettings:
+    """RAG 语义检索的 Embedding 配置（可选，OpenAI 兼容 /embeddings 接口）。
+
+    enabled=False（默认）时 RAG 仅用零成本词面检索；开启后词面+向量按 RRF 混合排序，
+    调用失败自动降级回词面检索。base_url/api_key 留空复用 llm 配置（同一服务商时零额外配置）。
+    """
+
+    enabled: bool = False
+    base_url: str = ""  # 空 = 复用 llm.base_url
+    api_key: str = ""  # 空 = 复用 llm.api_key
+    model: str = ""  # 如 bge-m3 / text-embedding-v3 / embedding-3
+    timeout: float = 15.0
+    batch_size: int = 16  # 分块向量批量嵌入的批大小
 
 
 @dataclass
@@ -86,6 +106,7 @@ class Settings:
     llm_rate_limit_per_chat: int = 10  # 每会话每分钟最多生成次数（0 = 不限），超出忽略并记录原因
     allowed_contacts: list[str] = field(default_factory=list)  # 联系人白名单（会话名）；空 = 允许全部；["*"] = 全部
     knowledge_dir: str = ""  # RAG 知识库目录（.md/.txt）；空 = 未启用；前端目录选择器设置
+    embedding: EmbeddingSettings = field(default_factory=EmbeddingSettings)  # RAG 语义检索（可选）
     # ---- 监控告警（告警消息发给你自己，默认关闭） ----
     alert_channel: str = "off"  # off | wechat-filehelper | dingtalk-self
     alert_dingtalk_chat_id: str = ""  # dingtalk-self 目标会话 ID
@@ -130,9 +151,14 @@ def load_settings(config_path: str | None = None) -> Settings:
 
     if isinstance(data.get("llm"), dict):
         for key in ("api_key", "base_url", "model", "temperature", "timeout", "num_candidates",
-                    "max_history", "max_retries", "retry_backoff", "style"):
+                    "max_history", "max_retries", "retry_backoff", "style",
+                    "vision_model", "vision_base_url", "vision_api_key"):
             if key in data["llm"]:
                 setattr(s.llm, key, data["llm"][key])
+    if isinstance(data.get("embedding"), dict):
+        for key in ("enabled", "base_url", "api_key", "model", "timeout", "batch_size"):
+            if key in data["embedding"]:
+                setattr(s.embedding, key, data["embedding"][key])
     if isinstance(data.get("jev"), dict):
         for key in ("enabled", "provider", "api_key", "base_url", "model", "rewrite_on_fail"):
             if key in data["jev"]:
@@ -198,7 +224,15 @@ def load_settings(config_path: str | None = None) -> Settings:
     s.llm.base_url = env(_ENV_PREFIX + "LLM_BASE_URL", s.llm.base_url)
     s.llm.model = env(_ENV_PREFIX + "LLM_MODEL", s.llm.model)
     s.llm.style = env(_ENV_PREFIX + "LLM_STYLE", s.llm.style)
+    s.llm.vision_model = env(_ENV_PREFIX + "LLM_VISION_MODEL", s.llm.vision_model)
+    s.llm.vision_base_url = env(_ENV_PREFIX + "LLM_VISION_BASE_URL", s.llm.vision_base_url)
+    s.llm.vision_api_key = env(_ENV_PREFIX + "LLM_VISION_API_KEY", s.llm.vision_api_key)
     s.knowledge_dir = env(_ENV_PREFIX + "KNOWLEDGE_DIR", s.knowledge_dir)
+
+    s.embedding.enabled = _as_bool(env(_ENV_PREFIX + "EMBEDDING_ENABLED"), s.embedding.enabled)
+    s.embedding.base_url = env(_ENV_PREFIX + "EMBEDDING_BASE_URL", s.embedding.base_url)
+    s.embedding.api_key = env(_ENV_PREFIX + "EMBEDDING_API_KEY", s.embedding.api_key)
+    s.embedding.model = env(_ENV_PREFIX + "EMBEDDING_MODEL", s.embedding.model)
 
     s.jev.enabled = _as_bool(env(_ENV_PREFIX + "JEV_ENABLED"), s.jev.enabled)
     s.jev.provider = env(_ENV_PREFIX + "JEV_PROVIDER", s.jev.provider)

@@ -17,6 +17,19 @@ const statusText = computed(() => {
   return `${stats.value.path}（${stats.value.files} 个文件 / ${stats.value.chunks} 块）`
 })
 
+const emb = computed(() => stats.value?.embedding || null) // {enabled, model, cached, last_error}
+
+async function toggleEmbedding() {
+  try {
+    const data = await api.updateConfig({ embedding_enabled: !(emb.value?.enabled), persist: true })
+    if (!data.changed.includes('embedding_enabled')) throw new Error('保存未生效')
+    await refresh()
+    emit('notify', `语义检索已${emb.value?.enabled ? '开启' : '关闭'}`)
+  } catch (e) {
+    emit('notify', `切换失败: ${e.message}（需先在配置文件设置 embedding.model）`)
+  }
+}
+
 async function refresh() {
   try { stats.value = await api.knowledge() } catch (e) { emit('notify', `知识库状态获取失败: ${e.message}`) }
 }
@@ -105,12 +118,19 @@ onMounted(refresh)
       最近扫描: {{ fmtTime(stats.last_scan) }}
       <span v-if="stats.last_error" class="err">（{{ stats.last_error }}）</span>
     </p>
+    <p v-if="stats && stats.enabled" class="meta">
+      语义检索: {{ emb && emb.enabled ? `开（${emb.model}，缓存 ${emb.cached} 块向量）` : '关（仅词面检索）' }}
+      <span v-if="emb && emb.last_error" class="err">（{{ emb.last_error }}）</span>
+    </p>
     <div class="btns">
       <button class="primary" @click="openPicker">
         {{ stats && stats.enabled ? '更换目录' : '选择目录' }}
       </button>
       <button v-if="stats && stats.enabled" :disabled="scanning" @click="rescan">
         {{ scanning ? '扫描中...' : '重新扫描' }}
+      </button>
+      <button v-if="stats && stats.enabled" @click="toggleEmbedding">
+        {{ emb && emb.enabled ? '语义检索: 开' : '语义检索: 关' }}
       </button>
       <button v-if="stats && stats.enabled" class="danger" @click="disable">停用</button>
     </div>

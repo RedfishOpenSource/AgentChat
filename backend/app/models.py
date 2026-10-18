@@ -119,5 +119,6 @@ class ConfigUpdateRequest(BaseModel):
     alert_dingtalk_chat_id: Optional[str] = None
     allowed_contacts: Optional[list[str]] = None
     knowledge_dir: Optional[str] = None  # RAG 知识库目录（空字符串 = 停用）
+    embedding_enabled: Optional[bool] = None  # RAG 语义检索开关（需已配置 embedding.model）
     auto_send: Optional[bool] = None  # 自动发送开关（默认人工确认）
     persist: bool = False

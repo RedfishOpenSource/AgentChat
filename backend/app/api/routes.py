@@ -104,6 +104,8 @@ async def update_config(request: Request, body: ConfigUpdateRequest):
             llm_keys["style"] = updates["llm_style"]
         if llm_keys:
             yaml_updates["llm"] = llm_keys
+        if "embedding_enabled" in updates:
+            yaml_updates["embedding"] = {"enabled": updates["embedding_enabled"]}
         for k in ("group_trigger", "non_text_action", "debounce_seconds",
                   "llm_rate_limit_per_chat", "alert_channel", "alert_dingtalk_chat_id",
                   "allowed_contacts", "knowledge_dir"):

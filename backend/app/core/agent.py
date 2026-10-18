@@ -10,6 +10,7 @@ import json
 import logging
 import time
 from collections import deque
+from pathlib import Path
 from typing import Sequence
 
 from ..config import Settings
@@ -17,6 +18,7 @@ from ..connectors import BaseConnector, build_connectors
 from ..connectors.base import ConnectorStartError
 from ..engine import ReplyGenerator, build_engine
 from ..engine.jev import JEVJudge
+from ..engine.vision import VisionDescriber, resolve_image_source
 from ..alerts import AlertManager
 from ..models import (
     ChatMessage,
@@ -54,6 +56,8 @@ class AgentService:
         self.alerts = alerts or AlertManager()
         self.kb = kb or KnowledgeBase()
         self.connectors: dict[Platform, BaseConnector] = {}
+        # 图片理解（可选）：配置了 llm.vision_model 才创建
+        self._vision = self._build_vision(settings)
         # LLM 连续失败计数（告警用）
         self._llm_fail_streak = 0
         self._watch_task: asyncio.Task | None = None
@@ -65,6 +69,20 @@ class AgentService:
         self._gen_windows: dict[tuple[str, str], deque[float]] = {}
 
     # ---------- 连接器管理 ----------
+    @staticmethod
+    def _build_vision(settings: Settings) -> VisionDescriber | None:
+        """按配置创建视觉描述器；未配置 vision_model 时返回 None（图片走占位草稿）。"""
+        model = str(getattr(settings.llm, "vision_model", "") or "").strip()
+        if not model:
+            return None
+        base_url = str(settings.llm.vision_base_url or "").strip() or settings.llm.base_url
+        api_key = str(settings.llm.vision_api_key or "").strip() or settings.llm.api_key
+        if not base_url:
+            logger.warning("[vision] 已配置 vision_model 但无 base_url，图片理解未启用")
+            return None
+        logger.info("[vision] 图片理解已启用: model=%s base=%s", model, base_url)
+        return VisionDescriber(base_url=base_url, api_key=api_key, model=model)
+
     def setup_connectors(self) -> dict[Platform, BaseConnector]:
         self.connectors = build_connectors(self.settings, self._on_messages)
         return self.connectors
@@ -199,22 +217,7 @@ class AgentService:
             if self.settings.non_text_action == "skip":
                 await self._ignore(incoming, f"非文本消息({incoming.msg_type})，策略为忽略")
                 return
-            # placeholder：生成提示草稿，由人工处理（不走引擎，避免 LLM 对占位文本瞎编）
-            label = type_label(incoming.msg_type)
-            reply = ChatMessage(
-                platform=incoming.platform,
-                chat_id=incoming.chat_id,
-                sender="assistant",
-                content=f"[收到{label}消息，暂不支持内容识别，请人工处理]",
-                direction=DIRECTION_OUT,
-                status=STATUS_PENDING,
-                reply_to=incoming.id,
-                meta={"engine": "system", "placeholder": True, "msg_type": incoming.msg_type},
-            )
-            self._apply_reply_routing(reply, incoming)
-            self.store.add(reply)
-            self.bus.publish({"type": "reply", "message": reply.model_dump(mode="json")})
-            logger.info("[agent] 非文本消息(%s)生成占位草稿 %s", incoming.msg_type, reply.id)
+            await self._handle_non_text(incoming)
             return
 
         # ---- 限流检查（仅限制引擎生成；非文本占位不占用额度） ----
@@ -280,6 +283,46 @@ class AgentService:
         )
         if status == STATUS_SENT:  # 仅普通草稿；blocked 永不自动发送
             await self._dispatch(reply)
+
+    async def _handle_non_text(self, incoming: ChatMessage) -> None:
+        """非文本消息：图片且有可用视觉模型时生成 AI 描述草稿，否则生成占位草稿。
+
+        两者都只是待确认草稿（不走自动发送），由人工决定是否回复及回复内容。
+        """
+        label = type_label(incoming.msg_type)
+        content = f"[收到{label}消息，暂不支持内容识别，请人工处理]"
+        meta: dict = {"engine": "system", "placeholder": True, "msg_type": incoming.msg_type}
+
+        if incoming.msg_type == "image" and self._vision is not None:
+            source = resolve_image_source(incoming.meta)
+            if not source:
+                logger.info("[vision] 图片消息无 image_path/image_url 元数据，使用占位草稿")
+            else:
+                try:
+                    desc = await self._vision.describe(source)
+                    content = f"[图片] AI 识别：{desc}"
+                    meta = {"engine": "vision", "vision_model": self._vision.model,
+                            "image_source": source, "placeholder": False,
+                            "msg_type": incoming.msg_type}
+                    logger.info("[vision] 图片描述完成 %s: %s", incoming.id, desc[:50])
+                except Exception as exc:  # noqa: BLE001 —— 识别失败兜底为占位草稿
+                    logger.warning("[vision] 图片识别失败，兜底占位草稿: %s", exc)
+                    meta["vision_error"] = str(exc)[:200]
+
+        reply = ChatMessage(
+            platform=incoming.platform,
+            chat_id=incoming.chat_id,
+            sender="assistant",
+            content=content,
+            direction=DIRECTION_OUT,
+            status=STATUS_PENDING,
+            reply_to=incoming.id,
+            meta=meta,
+        )
+        self._apply_reply_routing(reply, incoming)
+        self.store.add(reply)
+        self.bus.publish({"type": "reply", "message": reply.model_dump(mode="json")})
+        logger.info("[agent] 非文本消息(%s)生成草稿 %s", incoming.msg_type, reply.id)
 
     def _wechat_group_reply_meta(self, incoming: ChatMessage) -> dict | None:
         """微信群聊 quote-at 回复元数据；非微信/非群聊/已关闭时返回 None。
@@ -395,6 +438,19 @@ class AgentService:
                 self.kb.reset()
             s.knowledge_dir = path
             changed.append("knowledge_dir")
+        if updates.get("embedding_enabled") is not None:
+            s.embedding.enabled = bool(updates["embedding_enabled"])
+            try:
+                self.kb.set_embedding(
+                    s.embedding,
+                    llm_base_url=s.llm.base_url,
+                    llm_api_key=s.llm.api_key,
+                    cache_path=self._embedding_cache_path(),
+                )
+                changed.append("embedding_enabled")
+            except ValueError as exc:
+                s.embedding.enabled = not s.embedding.enabled  # 回滚，保持配置一致
+                raise ValueError(f"embedding 配置无效: {exc}") from exc
 
         if updates.get("group_trigger") is not None:
             if updates["group_trigger"] not in ("at-mention", "all", "listen-only"):
@@ -589,6 +645,11 @@ class AgentService:
         return user_msg, reply
 
     # ---------- 退出 ----------
+    def _embedding_cache_path(self) -> str:
+        """向量缓存文件路径：与数据库同目录（db 为 :memory: 时用当前目录）。"""
+        db = Path(self.settings.db_path)
+        return str(db.parent / "rag_embeddings.json") if str(db.parent) != "." else "rag_embeddings.json"
+
     async def shutdown(self) -> None:
         # 尽力冲刷未处理的连发积压，避免丢草稿（消息已落盘，草稿生成后也会落盘）
         for key in list(self._pending.keys()):
@@ -612,3 +673,12 @@ class AgentService:
                 await self.jev.aclose()
             except Exception:  # noqa: BLE001
                 pass
+        if self._vision is not None:
+            try:
+                await self._vision.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await self.kb.aclose()
+        except Exception:  # noqa: BLE001
+            pass

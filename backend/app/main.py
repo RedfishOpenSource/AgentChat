@@ -22,6 +22,23 @@ from .store import EventBus, MessageStore
 logger = logging.getLogger("chatagent")
 
 
+class CacheAwareStaticFiles(StaticFiles):
+    """静态托管加缓存策略，避免发版后浏览器白屏：
+
+    - index.html（入口）→ no-cache：每次都重新验证，确保引用最新 hash 的资源
+    - 其余文件（vite 产物文件名带内容 hash）→ 缓存一年 immutable，可安全长缓存
+    """
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):  # noqa: ANN001, ANN202
+        resp = super().file_response(full_path, stat_result, scope, status_code)
+        p = str(full_path).replace("\\", "/").lower()
+        if p.endswith(".html"):
+            resp.headers["Cache-Control"] = "no-cache"
+        else:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+
 def _setup_logging(log_file: str) -> None:
     """控制台 + 按天轮转文件日志（保留 14 天）；控制台仅配置一次，文件按需去重添加。"""
     root = logging.getLogger()
@@ -58,6 +75,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             kb.configure(settings.knowledge_dir)
         except ValueError as exc:
             logger.warning("知识库目录不可用，RAG 未启用: %s", exc)
+    if settings.embedding.enabled:
+        try:
+            emb_cache = Path(settings.db_path).parent / "rag_embeddings.json"
+            kb.set_embedding(
+                settings.embedding,
+                llm_base_url=settings.llm.base_url,
+                llm_api_key=settings.llm.api_key,
+                cache_path=str(emb_cache),
+            )
+        except ValueError as exc:
+            logger.warning("Embedding 配置无效，语义检索未启用（仅词面检索）: %s", exc)
     engine, jev = build_engine(settings, kb=kb)
     alert_manager = AlertManager(
         notifier=build_notifier(settings.alert_channel, settings.alert_dingtalk_chat_id,
@@ -115,7 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Path(__file__).resolve().parents[2] / "frontend" / "dist"
     )
     if (static_dir / "index.html").is_file():
-        app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="frontend")
+        app.mount("/", CacheAwareStaticFiles(directory=str(static_dir), html=True), name="frontend")
         logger.info("前端静态资源已托管: %s", static_dir)
     else:
         logger.info("未找到前端构建产物(%s)，仅提供 API（开发请用 npm run dev）", static_dir)

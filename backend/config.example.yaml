@@ -41,6 +41,9 @@ llm:
   num_candidates: 1                  # 每次生成的候选数量（参考项目为 3）
   max_retries: 2                     # 失败重试次数（超时/5xx/429 才重试）；全部失败会生成错误占位草稿
   retry_backoff: 1.0                 # 重试退避基数（秒），指数递增
+  vision_model: ""                   # 图片理解（可选）：如 qwen-vl-plus / glm-4v；空 = 收到图片只生成占位草稿
+  vision_base_url: ""                # 空 = 复用上方 base_url（DeepSeek 无视觉模型，需另配服务商时填写）
+  vision_api_key: ""                 # 空 = 复用上方 api_key
 
 jev:                                 # JEV 结构化判断（可选，参考 TypeSafe JEV）
   enabled: false
@@ -49,6 +52,14 @@ jev:                                 # JEV 结构化判断（可选，参考 Typ
   base_url: "https://api.typesafe.ai"
   model: "jev-latest"
   rewrite_on_fail: true              # 复审全部不合格时重写一次
+
+embedding:                           # RAG 语义检索（可选，OpenAI 兼容 /embeddings 接口）
+  enabled: false                     # 关闭时仅用零成本词面检索；开启后词面+向量混合排序
+  base_url: ""                       # 空 = 复用 llm.base_url（同一服务商时零额外配置）
+  api_key: ""                        # 空 = 复用 llm.api_key；或环境变量 CHATAGENT_EMBEDDING_API_KEY
+  model: ""                          # 如 bge-m3 / text-embedding-v3 / embedding-3
+  timeout: 15.0
+  batch_size: 16                     # 分块批量嵌入批大小；分块向量带磁盘缓存，重启不重复计费
 
 wechat:
   enabled: true

@@ -19,7 +19,7 @@
 │  │ WeChatConnector  │ ───────────────▶│  ingest()    │───────────▶│ ReplyGenerator   │
 │  │  mock / wxauto   │                 │  存储/广播    │            │  mock(规则)       │
 │  │ DingTalkCliConn  │                 │              │            │  llm(DeepSeek)   │
-│  │  mock / cli      │◀───────────────│  发送回复     │            │  (RAG…后续扩展)   │
+│  │  mock / cli      │◀───────────────│  发送回复     │            │  (图片理解/语义检索可选)│
 │  └──────────────────┘   send_reply()  └──────────────┘            └────────┬─────────┘
 │                                            ▲                               │ 可选
 │  消息存储 MessageStore / 事件总线 EventBus    │ 人工审核            ┌─────────▼─────────┐
@@ -28,7 +28,8 @@
           ▲
           │ HTTP + WebSocket (vite 代理)
 ┌─────────┴──────────┐
-│  前端 (Vue 3)       │  连接器状态/启停、模拟消息注入、消息流+待审核操作、对话测试
+│  前端 (Vue 3)       │  连接器状态/启停、模拟消息注入、消息流+待审核操作、对话测试、
+│                     │  知识库（目录选择/重扫/语义检索开关）
 └────────────────────┘
 ```
 
@@ -193,6 +194,8 @@ jev:
 | `CHATAGENT_LLM_MODEL` | 模型名 | deepseek-chat |
 | `CHATAGENT_LLM_STYLE` | 回复风格预设：default / formal / concise / casual / friendly | default |
 | `CHATAGENT_KNOWLEDGE_DIR` | RAG 知识库目录（.md/.txt）；空 = 未启用 | 空 |
+| `CHATAGENT_EMBEDDING_ENABLED` / `_BASE_URL` / `_API_KEY` / `_MODEL` | RAG 语义检索开关/地址/密钥/模型 | false / 空(复用 llm) / 空(复用 llm) / 空 |
+| `CHATAGENT_LLM_VISION_MODEL` / `_VISION_BASE_URL` / `_VISION_API_KEY` | 图片理解模型/地址/密钥 | 空 / 空(复用 llm) / 空(复用 llm) |
 | `CHATAGENT_JEV_ENABLED` / `CHATAGENT_JEV_PROVIDER` / `CHATAGENT_JEV_API_KEY` | JEV 开关/实现/密钥 | false / mock / 空 |
 | `CHATAGENT_WECHAT_MODE` / `CHATAGENT_WECHAT_GROUP_REPLY` | 微信连接器模式 / 群聊回复方式 | mock / quote-at |
 | `CHATAGENT_DINGTALK_MODE` / `CHATAGENT_DINGTALK_DWS_BIN` / `CHATAGENT_DINGTALK_LISTEN_KIND` / `CHATAGENT_DINGTALK_REPLY_MODE` | 钉钉 dws 模式配置 | mock / dws / at-me / quote |
@@ -210,7 +213,7 @@ jev:
 
 - 回复引擎（mock ↔ llm）、JEV 开关/实现、候选数量、温度、重试次数、**回复风格预设**
 - 群聊触发策略、非文本处理、连发合并时长、每会话生成限额、联系人白名单、告警渠道
-- **知识库目录**（前端「知识库」面板选择，或 PUT /api/config 的 `knowledge_dir`）
+- **知识库目录**（前端「知识库」面板选择，或 PUT /api/config 的 `knowledge_dir`）与**语义检索开关**（`embedding_enabled`）
 - `persist: true` 时同步写回配置文件（`jev_api_key` 除外，不落盘）；连接器模式与监听地址等需重启
 
 ## RAG 知识库回复
@@ -218,11 +221,24 @@ jev:
 让回复参考你自己的文档：前端「知识库（RAG）」面板 → 「选择目录」（服务端目录选择器，支持盘符/文件夹逐级浏览）
 → 后端扫描 `.md` / `.txt`（含子目录，UTF-8 / GBK 自动识别）并建立中文 bigram 倒排索引。
 
-- **生成时**：自动检索与触发消息最相关的分块（top-4，TF-IDF 打分，至少命中 2 个词组才注入），
-  以「[知识库参考资料]」段落拼进 LLM 提示词，并提示「资料中没有的信息不要编造」；引用了哪些文件记录在草稿 `meta.rag`
+- **生成时**：自动检索与触发消息最相关的分块（top-4）注入提示词，并提示「资料中没有的信息不要编造」；引用了哪些文件记录在草稿 `meta.rag`
 - **更新**：目录内容变化会在下次生成时自动重扫（冷却 5 秒防抖）；也可手动点「重新扫描」
 - **开关**：面板「停用」或 `knowledge_dir: ""`；仅 engine=llm 时生效，mock 引擎不受影响
-- 零外部依赖（无需向量库/Embedding API）；语义向量检索可作为后续扩展
+
+**语义检索（可选，默认关）**：词面检索（零依赖，始终可用）对同义改述无能为力，可选配任意
+OpenAI 兼容 `/embeddings` 接口开启语义向量检索：
+
+```yaml
+embedding:
+  enabled: true
+  model: "bge-m3"          # 或 text-embedding-v3 / embedding-3 等；base_url/api_key 留空复用 llm 配置
+```
+
+- 开启后词面+向量两路排名按 **RRF 融合**，同义改述（如知识库写「报销流程」，提问「钱怎么退回来」）也能召回
+- **分块向量磁盘缓存**（`rag_embeddings.json`，与数据库同目录）：重启不重复计费，只对新增/变更分块调用接口
+- **失败自动降级**：Embedding 接口超时/报错时自动退回纯词面检索（60 秒冷却），绝不阻断回复生成
+- 成本极低：小型嵌入模型按量计费通常每百万 token 几毛钱，分块向量只需算一次
+- 前端「知识库」面板可一键开关并查看缓存向量数；也可 `PUT /api/config` 的 `embedding_enabled` 热切换
 
 ## 监控告警
 
@@ -251,11 +267,28 @@ jev:
 | 群聊只听不回 | — | `group_trigger: listen-only` |
 | 图片/语音/视频/表情/文件等 | 生成占位草稿「收到图片消息，暂不支持内容识别」 | `non_text_action: placeholder`（默认） |
 | 同上，静默忽略 | 记录状态不生成 | `non_text_action: skip` |
+| 图片消息（已配视觉模型） | 调用视觉模型生成图片描述草稿「[图片] AI 识别：…」 | `llm.vision_model`（可选） |
+| 同上，未配视觉模型 | 生成占位草稿「收到图片消息，暂不支持内容识别」 | `non_text_action: placeholder`（默认） |
 | 系统消息（撤回等） | 始终忽略 | — |
 | 自己发送的消息 | 连接器层直接过滤（防回声循环） | — |
 | 不在联系人白名单的会话 | 忽略（记录状态，不生成）；名单可运行时修改 | `allowed_contacts` / 前端白名单面板 |
 
 忽略的消息在前端消息流中标记为「已忽略」并显示原因；微信连接器通过 `username` 是否以 `@chatroom` 结尾判定群聊，通过内容中的 `@昵称` 检测 @我。
+
+## 图片理解（可选）
+
+配置 `llm.vision_model` 后，收到的图片会自动交给 OpenAI 兼容视觉模型生成**图片描述草稿**
+（「[图片] AI 识别：…]」，仍走人工确认，不自动发送）；描述失败或未配置时退回占位草稿。
+DeepSeek 无视觉模型，可将 `vision_base_url` / `vision_api_key` 指向 Qwen-VL、GLM-4V 等
+OpenAI 兼容视觉接口（留空则复用对话模型配置）。图片来源取消息 meta 的 `image_path`（本地文件）
+或 `image_url`（链接）；语音/视频等其他非文本类型仍按占位/忽略策略处理。
+
+```yaml
+llm:
+  vision_model: "qwen-vl-plus"   # 空 = 图片只生成占位草稿（默认）
+  vision_base_url: ""            # 空 = 复用 base_url
+  vision_api_key: ""             # 空 = 复用 api_key
+```
 
 ## 数据持久化与审计
 
@@ -264,11 +297,11 @@ jev:
 - 审计日志：每次「确认发送/驳回」记录操作人、时间、内容快照，`GET /api/audit` 查询
 - 微信监听水位独立落盘（wechatauto 库管理），重启不漏消息不重复推
 
-## 安全约束：永不自动发送
+## 安全约束：默认人工确认
 
-- 生成结果一律为**草稿**（待确认/拦截状态），唯一的发送路径是人工在前端点击「确认发送」
+- 生成结果默认为**草稿**（待确认状态）；`auto_send: true`（默认 false，前端可一键切换）时普通草稿自动发送，**blocked（JEV 拦截）草稿任何情况下永不自动发送**
 - 前端待审核回复会填入**可编辑草稿框**：修改后发送发送编辑稿，原稿保留在 `meta.edited_from`
-- 代码层面：`_dispatch()` 仅能被 `approve_reply()` 调用；配置中不存在任何自动发送开关
+- 代码层面：`_dispatch()` 仅能被 `approve_reply()` 调用；blocked 草稿的自动发送在代码层被显式排除
 
 ## API 一览
 
@@ -287,14 +320,24 @@ jev:
 ## 测试结果
 
 ```
-backend 单元/接口测试:  115 passed（含连接器、持久化、白名单、连发合并、场景策略、LLM 韧性、告警、热更新、静态托管、微信群聊引用+@回复）
+backend 单元/接口测试:  157 passed（含连接器、持久化、白名单、连发合并、场景策略、LLM 韧性、告警、热更新、静态托管、微信群聊引用+@回复、RAG 语义检索、图片理解）
 端到端模拟 simulate.py: 16 passed, 0 failed
 钉钉真机验证:           真实群@消息 → 事件触发 → 生成回复 → 批准 → 引用回复送达 ✅
 前端 vite build:        OK
 ```
 
+## 设计决策（原 Roadmap 的结论）
+
+- **RAG 语义向量检索 —— 已实现（可选）**：支持任意 OpenAI 兼容 Embedding 接口 + 磁盘缓存 +
+  RRF 混合排序 + 失败降级；不配置则保持零成本词面检索。刻意不引入本地向量模型/向量库：
+  小型嵌入 API 按量计费成本可忽略，避免本地算力与向量库运维负担。
+- **微信群聊「真实 @」（选人弹窗强提醒）—— 刻意不做**：需 UIA 驱动微信选人弹层，
+  脆弱（窗口遮挡/缩放/版本变更即失败）、无法自动化测试、且模拟人工操作有账号风控风险。
+  现有「引用原消息 + 文本 @」已保证回复可定位到触发者，稳定性优先。
+- **语音/视频等内容识别 —— 暂不支持**：语音需 silk 解码+ASR 链路、视频需抽帧，
+  收益低于复杂度；现有占位草稿确保消息不静默丢失，由人工接管。图片已通过可选视觉模型覆盖。
+
 ## 声明
 
 - 本项目仅参考了 jev-chat-windows-deepseek-jev 的**处理流程设计**（预判→生成→复审→人工可控），代码为全新实现，未使用其源码。
 - 请仅在有权查看的聊天场景中使用；涉及转账、红包、密码等内容默认被 JEV 门禁拦截。
-- TODO / Roadmap：语义向量检索（Embedding）、微信群聊真实 @（选人弹窗强提醒，现为文本 @）。

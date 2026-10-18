@@ -33,6 +33,27 @@ def test_missing_dist_serves_api_only():
         assert c.get("/api/health").status_code == 200
 
 
+def test_static_cache_headers(tmp_path):
+    """回归：index.html 必须 no-cache（防发版白屏），带 hash 的资源长缓存 immutable。"""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text(
+        '<html><script src="/assets/index-abc123.js"></script></html>', encoding="utf-8"
+    )
+    assets = dist / "assets"
+    assets.mkdir()
+    (assets / "index-abc123.js").write_text("console.log(1)", encoding="utf-8")
+
+    with TestClient(create_app(make_settings(static_dir=str(dist))), client=("127.0.0.1", 12345)) as c:
+        html = c.get("/")
+        assert html.headers["cache-control"] == "no-cache"
+        js = c.get("/assets/index-abc123.js")
+        assert js.headers["cache-control"] == "public, max-age=31536000, immutable"
+        # API 响应不受静态缓存策略影响
+        assert "cache-control" not in c.get("/api/health").headers or \
+            c.get("/api/health").headers.get("cache-control") != "no-cache"
+
+
 def test_log_file_created(tmp_path):
     log_file = tmp_path / "logs" / "app.log"
     with TestClient(create_app(make_settings(log_file=str(log_file))),
