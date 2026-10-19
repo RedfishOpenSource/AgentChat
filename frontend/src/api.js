@@ -18,6 +18,7 @@ async function req(path, options = {}) {
 
 export const api = {
   status: () => req('/status'),
+  agents: () => req('/agents'),
   config: () => req('/config'),
   updateConfig: (body) => req('/config', { method: 'PUT', body: JSON.stringify(body) }),
   messages: (params = {}) => req(`/messages?${new URLSearchParams(params)}`),

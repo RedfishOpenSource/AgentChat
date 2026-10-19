@@ -162,15 +162,17 @@ dingtalk:
 
 ### 接入外部 Agent（ACP，可插拔）
 
-设置页「AI 接入」选 **Agent**，内置预设：**pi / Claude Code / Codex / Hermes / 自定义**。
+设置页「AI 接入」选 **Agent**，下拉直接选择已安装的 Agent（选项由 `/api/agents` 返回，含本机可用性检测）：**PI / Claude Code / Codex / Hermes / PI（内置 RPC）/ 自定义**。
 每个被监听的联系人保持一个独立 Agent 会话，多轮问答共享上下文；知识、工具等能力全部由 Agent 自带。
 
 | Agent | 接入方式 | 说明 |
 | --- | --- | --- |
-| pi | ChatAgent 内置适配（`pi --mode rpc`） | 每联系人独立子进程，`--session-id` 绑定会话，重启不丢上下文 |
-| Claude Code | 原生 ACP（`claude-code-acp`，需 `npm i -g @zed-industries/claude-code-acp`） | claude CLI 已登录可不填 Key |
-| Codex | 原生 ACP（`codex-acp`，需 `npm i -g @agentclientprotocol/codex-acp`） | 使用 codex CLI 已有登录态 |
-| Hermes / 自定义 | 任意 ACP 命令 | 填启动命令、参数、鉴权环境变量即可 |
+| PI | 标准 ACP（`pi-acp`，需 `npm i -g pi-acp`） | pi coding agent 经官方适配器接入，单进程多会话 |
+| Claude Code | 标准 ACP（`claude-code-acp`，需 `npm i -g @zed-industries/claude-code-acp`） | claude CLI 已登录可不填 Key |
+| Codex | 标准 ACP（`codex-acp`，需 `npm i -g @agentclientprotocol/codex-acp`） | 使用 codex CLI 已有登录态 |
+| Hermes | 预留（`hermes-acp`） | 安装其 ACP 适配器后下拉即可选中 |
+| PI（内置 RPC） | ChatAgent 内置适配（`pi --mode rpc`） | 每联系人独立子进程，`--session-id` 绑定会话，重启不丢上下文 |
+| 自定义 | 任意 ACP 命令 | 填启动命令、参数、鉴权环境变量即可，后续新 Agent 均可这样接入 |
 
 配置项：启动命令、参数、**工作空间（cwd）**、鉴权环境变量名与 Key、超时。
 ⚠️ Agent 具备工具执行（含 shell）能力，工作空间请指向专用目录；切换接入方式会重建引擎（会话重开）。

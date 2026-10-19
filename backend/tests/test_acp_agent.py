@@ -120,3 +120,35 @@ def test_acp_validation_rejects(hot_client, tmp_path):
     assert hot_client.put("/api/config", json={"acp_cwd": str(tmp_path / "nope")}).status_code == 400
     # 超时范围
     assert hot_client.put("/api/config", json={"acp_timeout": 1}).status_code == 400
+
+
+# ---------------- Agent 注册表（下拉选择） ----------------
+
+
+def test_agents_endpoint_lists_builtin_with_availability(hot_client, monkeypatch):
+    """/api/agents 返回内置注册表，available 按 PATH 检测（这里 mock 掉避免依赖真实环境）。"""
+    import app.agents_registry as reg
+
+    monkeypatch.setattr(
+        reg.shutil, "which",
+        lambda cmd: "C:/fake/" + cmd + ".cmd" if cmd in ("pi-acp", "claude-code-acp", "codex-acp", "pi") else None,
+    )
+    data = hot_client.get("/api/agents").json()
+    agents = {a["id"]: a for a in data["agents"]}
+
+    assert set(agents) == {"pi", "claude-code", "codex", "hermes", "pi-rpc"}
+    assert agents["pi"]["available"] is True and agents["pi"]["command"] == "pi-acp"
+    assert agents["claude-code"]["available"] is True
+    assert agents["codex"]["available"] is True
+    assert agents["hermes"]["available"] is False  # 未安装 → 标记不可用，但仍在下拉中可见
+    assert agents["pi-rpc"]["mode"] == "pi"
+
+
+def test_agents_endpoint_real_path_detection(hot_client):
+    """不做 mock：端点结构完整、available 为布尔（本机环境决定具体值）。"""
+    data = hot_client.get("/api/agents").json()
+    agents = data["agents"]
+    assert len(agents) >= 4
+    for a in agents:
+        assert isinstance(a["available"], bool)
+        assert a["command"] and a["name"] and a["mode"] in ("acp", "pi")

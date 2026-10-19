@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
+from ..agents_registry import list_agents
 from ..config import mask_settings, save_config_partial
 from ..connectors.base import ConnectorStartError
 from ..connectors.mock import MockConnector, is_mock_connector
@@ -38,6 +39,12 @@ def _store(request: Request):
 @router.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@router.get("/agents")
+async def list_available_agents():
+    """可下拉选择的现成 Agent（均经 ACP 接入），含本机可用性检测结果。"""
+    return {"agents": list_agents()}
 
 
 @router.get("/status")

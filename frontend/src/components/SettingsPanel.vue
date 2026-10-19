@@ -1,5 +1,6 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { api } from '../api'
 
 const props = defineProps({
   config: { type: Object, default: null }, // GET /api/config 的返回
@@ -29,24 +30,50 @@ const form = reactive({
   acp_timeout: 300,
 })
 
-// Agent 预设：pi 走 ChatAgent 内置 RPC 适配；其余为原生 ACP Agent
-const PRESETS = {
-  custom: { label: '自定义（任意 ACP Agent）', mode: 'acp', command: '', args: '', env_name: '' },
-  pi: { label: 'pi（内置 RPC 适配）', mode: 'pi', command: 'pi', args: '', env_name: '' },
-  claude: { label: 'Claude Code（claude-code-acp）', mode: 'acp', command: 'claude-code-acp', args: '', env_name: 'ANTHROPIC_AUTH_TOKEN' },
-  codex: { label: 'Codex（codex-acp）', mode: 'acp', command: 'codex-acp', args: '', env_name: '' },
-  hermes: { label: 'Hermes（填自定义命令）', mode: 'acp', command: '', args: '', env_name: '' },
-}
+// 可选 Agent 列表（后端注册表 + 可用性检测）；custom 为「手填任意 ACP 命令」入口
+const agents = ref([]) // [{id,name,mode,command,args,description,available}]
+const CUSTOM_ID = 'custom'
+const agentOptions = computed(() => [
+  ...agents.value.map((a) => ({
+    ...a,
+    label: `${a.name} — ${a.command}${a.available ? '' : '（未检测到，需先安装）'}`,
+  })),
+  { id: CUSTOM_ID, name: '自定义', label: '自定义（手填任意 ACP Agent 命令）', available: true },
+])
 
-function applyPreset() {
-  const p = PRESETS[form.acp_preset]
-  if (!p) return
-  form.acp_mode = p.mode
-  form.acp_command = p.command
-  form.acp_args = p.args
-  form.acp_env_name = p.env_name
+async function loadAgents() {
+  try {
+    const data = await api.agents()
+    agents.value = data.agents || []
+  } catch { /* 后端未启动时忽略 */ }
+}
+onMounted(loadAgents)
+
+// 预填：选中注册表项时自动填 mode/command/args；custom 保持当前手填值
+function applyAgent() {
+  if (form.acp_preset === CUSTOM_ID) {
+    dirty.value = true
+    return
+  }
+  const a = agents.value.find((x) => x.id === form.acp_preset)
+  if (!a) return
+  form.acp_mode = a.mode
+  form.acp_command = a.command
+  form.acp_args = a.args || ''
   dirty.value = true
 }
+
+// 回显：根据 mode+command 反推选中的 Agent（匹配不到则归为自定义）
+function detectPreset(mode, command) {
+  const hit = agents.value.find((a) => a.mode === mode && a.command === (command || '').trim())
+  return hit ? hit.id : CUSTOM_ID
+}
+
+const presetHint = computed(() => {
+  if (form.acp_preset === CUSTOM_ID) return '任何实现 Agent Client Protocol（JSON-RPC over stdio）的命令均可接入。'
+  const a = agents.value.find((x) => x.id === form.acp_preset)
+  return a?.description || '通过 ACP 协议（JSON-RPC over stdio）接入现成 Agent。'
+})
 
 watch(
   () => props.config,
@@ -68,22 +95,32 @@ watch(
     form.acp_env_name = c.acp?.env_name || ''
     form.acp_env_key = c.acp?.env_key || ''
     form.acp_timeout = c.acp?.timeout ?? 300
-    form.acp_preset = 'custom'
+    form.acp_preset = detectPreset(form.acp_mode, form.acp_command)
   },
   { immediate: true }
 )
 
+watch(agents, () => {
+  // 注册表加载完成后重新回显（config 先到、agents 后到的时序）
+  if (!dirty.value) form.acp_preset = detectPreset(form.acp_mode, form.acp_command)
+})
+
+watch(() => form.engine, (engine) => {
+  // 切到 Agent 接入且未配置过命令时，自动选中第一个本机可用的 Agent
+  if (engine === 'acp' && !form.acp_command.trim() && !dirty.value) {
+    const first = agents.value.find((a) => a.available) || agents.value[0]
+    if (first) {
+      form.acp_preset = first.id
+      form.acp_mode = first.mode
+      form.acp_command = first.command
+      form.acp_args = first.args || ''
+    }
+  }
+})
+
 watch(() => props.saving, (saving, wasSaving) => {
   if (wasSaving && !saving) dirty.value = false
 })
-
-const presetHint = computed(() => ({
-  pi: 'pi 由 ChatAgent 内置适配（pi --mode rpc）；每个联系人一个会话，多轮上下文由 pi 会话文件保持，服务重启不丢。',
-  claude: '通过 claude-code-acp 适配器接入；如 claude CLI 已登录可不填 Key。',
-  codex: '通过 codex-acp 适配器接入；使用 codex CLI 已有登录态。',
-  hermes: 'Hermes 未提供预设，请填写其 ACP 启动命令与参数。',
-  custom: '任何实现 Agent Client Protocol 的命令均可接入。',
-}[form.acp_preset] || '任何实现 Agent Client Protocol 的命令均可接入。'))
 
 function save() {
   if (props.saving) return
@@ -146,9 +183,9 @@ function save() {
 
         <template v-if="form.engine === 'acp'">
           <label>
-            Agent 预设
-            <select v-model="form.acp_preset" @change="applyPreset">
-              <option v-for="(p, k) in PRESETS" :key="k" :value="k">{{ p.label }}</option>
+            选择 Agent
+            <select v-model="form.acp_preset" @change="applyAgent">
+              <option v-for="a in agentOptions" :key="a.id" :value="a.id">{{ a.label }}</option>
             </select>
             <span class="hint">{{ presetHint }}</span>
           </label>
