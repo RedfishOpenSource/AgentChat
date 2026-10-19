@@ -1,6 +1,7 @@
 """FastAPI 应用入口。"""
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from logging.handlers import TimedRotatingFileHandler
@@ -131,8 +132,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 }
             )
             while True:
-                event = await queue.get()
-                await ws.send_json(event)
+                try:
+                    event = await queue.get()
+                    await ws.send_json(event)
+                except asyncio.CancelledError:
+                    break  # 客户端 TCP 骤断/服务关停：正常断开，不写错误栈（避免日志刷屏）
         except WebSocketDisconnect:
             pass
         finally:

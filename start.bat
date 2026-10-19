@@ -1,18 +1,43 @@
 @echo off
-rem ChatAgent 一键启动（Windows）：崩溃自动重启 + 日志落盘
-chcp 65001 >nul 2>&1
+rem ChatAgent one-click start (Windows): auto-restart on crash + file logging.
+rem NOTE: keep this file pure ASCII. Non-ASCII text in a batch file combined
+rem with `chcp` mid-file is known to desync cmd's parser (e.g. 'evel' is not
+rem recognized), which makes the script randomly break.
+title ChatAgent
 cd /d %~dp0backend
+
+rem Refuse to double-start: if port 8000 is already listening, exit with a hint.
+netstat -ano | findstr :8000 | findstr LISTENING >nul 2>&1
+if not errorlevel 1 (
+  echo [ChatAgent] Port 8000 is already in use. The service is probably running at http://127.0.0.1:8000
+  echo [ChatAgent] To restart, please run stop.bat first, then this script again.
+  pause
+  exit /b 1
+)
 
 if not exist logs mkdir logs
 if not exist .venv (
-  echo [ChatAgent] 首次运行，初始化环境（需要几分钟）...
-  uv sync || (echo 依赖安装失败，请确认已安装 uv & pause & exit /b 1)
+  echo [ChatAgent] First run: initializing environment via "uv sync" ...
+  uv sync
+  if errorlevel 1 (
+    echo [ChatAgent] uv sync failed. Please make sure "uv" is installed and on PATH.
+    pause
+    exit /b 1
+  )
 )
 
 set PYTHONIOENCODING=utf-8
+echo ================================================
+echo  ChatAgent starting...
+echo    URL :  http://127.0.0.1:8000
+echo    Log :  backend\logs\service.log
+echo    Stop:  close this window, or run stop.bat
+echo  (A silent console is normal. Details go to the log file above.)
+echo ================================================
 :loop
-echo [%date% %time%] ChatAgent 启动 >> logs\service.log
+echo [%date% %time%] ChatAgent start >> logs\service.log
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log >> logs\service.log 2>&1
-echo [%date% %time%] 服务退出（退出码 %errorlevel%），5 秒后自动重启 >> logs\service.log
+echo [%date% %time%] Server exited (code %errorlevel%). Restarting in 5s... see backend\logs\service.log
+echo [%date% %time%] ChatAgent exit (code %errorlevel%), restart in 5s >> logs\service.log
 timeout /t 5 /nobreak > nul
 goto loop

@@ -1,8 +1,11 @@
 @echo off
-rem ChatAgent 停止：按端口找到进程并结束
-chcp 65001 >nul 2>&1
+rem ChatAgent stop: kill the process listening on port 8000.
+rem NOTE: keep this file pure ASCII (see start.bat for the reason).
+set FOUND=0
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr :8000 ^| findstr LISTENING') do (
-  echo 结束进程 %%p
+  echo Killing PID %%p
   taskkill /F /PID %%p
+  set FOUND=1
 )
-echo ChatAgent 已停止。
+if %FOUND%==0 echo No ChatAgent process found on port 8000.
+echo Done.

@@ -15,6 +15,8 @@ const messages = ref([])
 const wsConnected = ref(false)
 const toastMsg = ref('')
 const activeTab = ref('stream') // stream | direct
+// 顶部告警横幅（来自 /api/status 的 alerts 字段；后端未返回时为空数组）
+const alerts = computed(() => status.value?.alerts || [])
 let ws = null
 let toastTimer = null
 
