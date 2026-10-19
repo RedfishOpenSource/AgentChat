@@ -1,12 +1,11 @@
 # ChatAgent 后端配置示例。复制为 config.yaml 后修改；环境变量 CHATAGENT_* 优先级更高。
 # 注意：前端「设置」面板的持久化写回目标是 config.yaml（本文件仅作模板，勿手工改后直接依赖）。
 
-engine: mock          # mock | llm（llm 需配置 llm.api_key）
+engine: mock          # mock | llm | acp（acp = 外部 Agent：pi / claude code / codex / hermes，需配置 acp 块）
 auto_send: false      # 自动发送开关（默认关：仅生成草稿，人工确认后发送；可在前端按钮切换）
 knowledge_dir: ""     # RAG 知识库目录（.md/.txt，含子目录）；空 = 未启用；推荐在前端「知识库」面板用目录选择器设置
 debounce_seconds: 3.0 # 连发合并：静默 N 秒后才生成（同会话新消息重置计时）；0 = 关闭
-# 安全约束：本项目不支持自动发送。回复仅作为草稿生成（待确认），
-# 发送必须由人工在前端确认（可编辑草稿后发送）。
+# 安全默认：普通回复仅生成草稿，人工确认后发送。仅在明确接受风险后设置 auto_send: true；blocked 仍不会自动发送。
 
 db_path: "chatagent.db"   # SQLite 落盘路径（消息/草稿/审计日志）；设为 ":memory:" 则不落盘
 
@@ -34,8 +33,8 @@ allowed_ips: ["127.0.0.1", "::1"]
 llm:
   # style: default                     # 回复风格预设：default(口语简洁礼貌) | formal(正式专业)
   #                                   # concise(极简高效) | casual(轻松口语) | friendly(热情友好)
-  api_key: ""                        # 或环境变量 CHATAGENT_LLM_API_KEY
-  base_url: "https://api.deepseek.com"
+  api_key: ""                        # 也可在前端「设置」面板填写（保存写回 config.yaml）；或环境变量 CHATAGENT_LLM_API_KEY
+  base_url: "https://api.deepseek.com"  # 任意 OpenAI 兼容 Chat Completions 地址（含 /v1），程序追加 /chat/completions
   model: "deepseek-chat"
   temperature: 0.7
   num_candidates: 1                  # 每次生成的候选数量（参考项目为 3）
@@ -44,6 +43,15 @@ llm:
   vision_model: ""                   # 图片理解（可选）：如 qwen-vl-plus / glm-4v；空 = 收到图片只生成占位草稿
   vision_base_url: ""                # 空 = 复用上方 base_url（DeepSeek 无视觉模型，需另配服务商时填写）
   vision_api_key: ""                 # 空 = 复用上方 api_key
+
+acp:                                 # 可插拔 Agent 接入（engine=acp 时生效）
+  mode: acp                          # acp(标准 ACP 协议：claude-code-acp / codex-acp / hermes) | pi(内置 RPC 适配)
+  command: ""                        # 启动命令，如 claude-code-acp / codex-acp / pi；必填
+  args: ""                           # 附加启动参数
+  cwd: ""                            # Agent 工作空间；⚠️ Agent 有工具执行能力，请指向专用目录
+  env_name: ""                       # 鉴权环境变量名，如 ANTHROPIC_AUTH_TOKEN（可留空用已有登录态）
+  env_key: ""                        # 环境变量值（API Key）
+  timeout: 300                       # 单次回复超时（秒），Agent 执行工具可能较慢
 
 jev:                                 # JEV 结构化判断（可选，参考 TypeSafe JEV）
   enabled: false
@@ -72,6 +80,9 @@ wechat:
   listen_chats: []                   # 要监听的会话：昵称/备注均可，如 ["文件传输助手", "张三"]
   #                                 # 留空则默认只监听「文件传输助手」
   group_reply: quote-at              # mode=replica 群聊回复：quote-at(引用原消息+文本@触发者，默认) | plain(直发)
+  # ---- 微信独立白名单与知识库（留空 = 使用全局 allowed_contacts / knowledge_dir）----
+  allowed_contacts: []               # 微信专属白名单（昵称/备注），空 = 用全局
+  knowledge_dir: ""                  # 微信专属知识库目录（.md/.txt），空 = 用全局
 
 dingtalk:
   enabled: true
@@ -84,6 +95,9 @@ dingtalk:
   listen_kind: at-me                 # at-me(推荐,只回@我) | all-direct | all-group | group
   listen_chats: []                   # listen_kind=group 时的群名列表，如 ["项目群"]
   reply_mode: quote                  # quote(引用回复原消息) | plain(直接发送)
+  # ---- 钉钉独立白名单与知识库（留空 = 使用全局 allowed_contacts / knowledge_dir）----
+  allowed_contacts: []               # 钉钉专属白名单（会话 ID），空 = 用全局
+  knowledge_dir: ""                  # 钉钉专属知识库目录（.md/.txt），空 = 用全局
 
   # ---- mode=cli（通用 CLI 约定，兼容保留）----
   command: ""

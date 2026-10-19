@@ -23,7 +23,7 @@ class CountingEngine(MockReplyGenerator):
         super().__init__()
         self.calls: list[tuple[str, list[str]]] = []
 
-    async def generate(self, message, history):
+    async def generate(self, message, history, kb=None):
         self.calls.append((message.content, [h.content for h in history]))
         return await super().generate(message, history)
 

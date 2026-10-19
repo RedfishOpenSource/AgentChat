@@ -72,6 +72,26 @@ class JEVSettings:
 
 
 @dataclass
+class ACPSettings:
+    """可插拔 Agent 接入（ACP 协议 / pi RPC 适配）。
+
+    mode=acp：标准 Agent Client Protocol（JSON-RPC over stdio），单进程多会话，
+    适用于 claude-code-acp / codex-acp / hermes 等原生 ACP Agent。
+    mode=pi：pi coding agent（pi --mode rpc），每个联系人独立子进程，
+    用 --session-id 保持多轮上下文（会话文件落盘，服务重启不丢）。
+    安全提示：Agent 具备工具执行能力，cwd 请指向专用工作空间目录。
+    """
+
+    mode: str = "acp"  # acp | pi
+    command: str = ""  # Agent 启动命令，如 claude-code-acp / codex-acp / pi
+    args: str = ""  # 附加启动参数
+    cwd: str = ""  # Agent 工作空间目录（会话 cwd）；空 = 服务当前目录
+    env_name: str = ""  # 传给 Agent 的鉴权环境变量名（如 ANTHROPIC_AUTH_TOKEN）
+    env_key: str = ""  # 环境变量值（API Key / Token）
+    timeout: float = 300.0  # 单次 prompt 超时（秒）；Agent 执行工具可能较慢
+
+
+@dataclass
 class ConnectorSettings:
     """聊天平台连接器配置。"""
 
@@ -86,13 +106,16 @@ class ConnectorSettings:
     dws_bin: str = "dws"  # dingtalk dws: DWS CLI 可执行文件路径
     reply_mode: str = "quote"  # dingtalk dws: quote(引用回复) | plain(直接发送)
     group_reply: str = "quote-at"  # wechat replica 群聊回复: quote-at(引用原消息+文本@触发者) | plain(直发)
+    # ---- 连接器级独立配置（留空 = 使用全局默认） ----
+    allowed_contacts: list[str] = field(default_factory=list)  # 本平台白名单；空 = 用全局 allowed_contacts
+    knowledge_dir: str = ""  # 本平台知识库目录；空 = 用全局 knowledge_dir
 
 
 @dataclass
 class Settings:
     host: str = "127.0.0.1"
     port: int = 8000
-    engine: str = "mock"  # mock | llm
+    engine: str = "mock"  # mock | llm | acp（acp = 外部 Agent：pi / claude code / codex / hermes）
     # 发送模式：auto_send=False（默认）仅生成草稿，人工确认后发送；True 时自动发送（前端按钮可切）
     auto_send: bool = False
     # 安全底线：blocked（敏感拦截）的草稿任何情况下都不会被自动发送。
@@ -118,6 +141,7 @@ class Settings:
     log_file: str = "logs/chatagent.log"  # 日志文件（按天轮转，保留 14 天）；空 = 仅控制台
     static_dir: str = ""  # 前端构建产物目录；空 = 自动探测 ../frontend/dist，不存在则仅服务 API
     llm: LLMSettings = field(default_factory=LLMSettings)
+    acp: ACPSettings = field(default_factory=ACPSettings)
     jev: JEVSettings = field(default_factory=JEVSettings)
     wechat: ConnectorSettings = field(default_factory=ConnectorSettings)
     dingtalk: ConnectorSettings = field(default_factory=ConnectorSettings)
@@ -137,14 +161,18 @@ def _find_config_file(explicit: str | None) -> Path | None:
 
 def _apply_connector(data: dict[str, Any], cs: ConnectorSettings) -> None:
     for key in ("enabled", "mode", "auto_start", "poll_interval", "command", "reply_command",
-                "listen_chats", "listen_kind", "dws_bin", "reply_mode", "group_reply"):
+                "listen_chats", "listen_kind", "dws_bin", "reply_mode", "group_reply",
+                "allowed_contacts", "knowledge_dir"):
         if key in data:
             setattr(cs, key, data[key])
+    if "allowed_contacts" in data and isinstance(data["allowed_contacts"], list):
+        cs.allowed_contacts = [str(x) for x in data["allowed_contacts"]]
 
 
 def load_settings(config_path: str | None = None) -> Settings:
     s = Settings()
-    cfg_file = _find_config_file(config_path)
+    explicit_path = config_path or os.environ.get(_ENV_PREFIX + "CONFIG_FILE")
+    cfg_file = _find_config_file(explicit_path)
     data: dict[str, Any] = {}
     if cfg_file is not None and yaml is not None:
         data = yaml.safe_load(cfg_file.read_text(encoding="utf-8")) or {}
@@ -159,6 +187,10 @@ def load_settings(config_path: str | None = None) -> Settings:
         for key in ("enabled", "base_url", "api_key", "model", "timeout", "batch_size"):
             if key in data["embedding"]:
                 setattr(s.embedding, key, data["embedding"][key])
+    if isinstance(data.get("acp"), dict):
+        for key in ("mode", "command", "args", "cwd", "env_name", "env_key", "timeout"):
+            if key in data["acp"]:
+                setattr(s.acp, key, data["acp"][key])
     if isinstance(data.get("jev"), dict):
         for key in ("enabled", "provider", "api_key", "base_url", "model", "rewrite_on_fail"):
             if key in data["jev"]:
@@ -167,15 +199,18 @@ def load_settings(config_path: str | None = None) -> Settings:
         if isinstance(data.get(name), dict):
             _apply_connector(data[name], getattr(s, name))
     for key in ("engine", "max_store", "host", "port", "db_path", "debounce_seconds",
-                "group_trigger", "non_text_action", "alert_channel", "alert_dingtalk_chat_id",
-                "alert_min_interval", "alert_check_interval", "llm_failure_threshold",
-                "log_file", "static_dir", "auto_send", "knowledge_dir"):
+                "group_trigger", "non_text_action", "llm_rate_limit_per_chat",
+                "alert_channel", "alert_dingtalk_chat_id", "alert_min_interval",
+                "alert_check_interval", "llm_failure_threshold", "log_file", "static_dir",
+                "auto_send", "knowledge_dir"):
         if key in data:
             setattr(s, key, data[key])
     for list_key in ("allowed_ips", "allowed_contacts"):
         if isinstance(data.get(list_key), list):
             setattr(s, list_key, [str(x) for x in data[list_key]])
-    if cfg_file is not None:
+    if explicit_path:
+        s.config_file = explicit_path
+    elif cfg_file is not None:
         # 热更新写回目标永远是 config.yaml；仅存在示例文件时不把它当写回目标
         s.config_file = str(cfg_file) if cfg_file.name == "config.yaml" else "config.yaml"
     # YAML 1.1 会把 off/on 解析为布尔值，归一化回字符串
@@ -272,21 +307,28 @@ def save_config_partial(updates: dict[str, Any], path: str) -> None:
     merge(data, updates)
     p.parent.mkdir(parents=True, exist_ok=True)
     if yaml is not None:
-        p.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(p)
+
+
+# 设置面板需要回显 LLM Key（用户要求保存后可见）；其余密钥字段仍脱敏。
+_REVEALED_KEY_PATHS = {("llm", "api_key")}
 
 
 def mask_settings(s: Settings) -> dict[str, Any]:
-    """输出配置用于展示，遮蔽密钥字段。"""
+    """输出配置用于展示：除 _REVEALED_KEY_PATHS 外遮蔽密钥字段（前 4 位 + ****）。"""
     data = asdict(s)
 
-    def _mask(obj: Any) -> Any:
+    def _mask(obj: Any, path: tuple[str, ...] = ()) -> Any:
         if isinstance(obj, dict):
             out = {}
             for k, v in obj.items():
-                if "api_key" in k and v:
+                if "api_key" in k and v and (path + (k,)) not in _REVEALED_KEY_PATHS:
                     out[k] = v[:4] + "****"
                 else:
-                    out[k] = _mask(v)
+                    out[k] = _mask(v, path + (k,))
             return out
         return obj
 

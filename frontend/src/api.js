@@ -21,18 +21,23 @@ export const api = {
   config: () => req('/config'),
   updateConfig: (body) => req('/config', { method: 'PUT', body: JSON.stringify(body) }),
   messages: (params = {}) => req(`/messages?${new URLSearchParams(params)}`),
+  audit: (limit = 100) => req(`/audit?limit=${limit}`),
   replies: (params = {}) => req(`/replies?${new URLSearchParams(params)}`),
-  approve: (id, content) => req(`/replies/${id}/approve`, {
+  approve: (id, content, confirmUnknown = false) => req(`/replies/${id}/approve`, {
     method: 'POST',
-    body: JSON.stringify(content !== undefined && content !== null ? { content } : {}),
+    body: JSON.stringify({ ...(content !== undefined && content !== null ? { content } : {}), confirm_unknown: confirmUnknown }),
+  }),
+  selectCandidate: (id, index) => req(`/replies/${id}/select`, {
+    method: 'POST', body: JSON.stringify({ index }),
   }),
   reject: (id) => req(`/replies/${id}/reject`, { method: 'POST' }),
   simulate: (body) => req('/simulate', { method: 'POST', body: JSON.stringify(body) }),
   chat: (body) => req('/chat', { method: 'POST', body: JSON.stringify(body) }),
   connector: (platform, action) => req(`/connectors/${platform}/${action}`, { method: 'POST' }),
-  setContacts: (list) => req('/contacts', { method: 'PUT', body: JSON.stringify({ allowed_contacts: list }) }),
-  knowledge: () => req('/knowledge'),
-  rescanKnowledge: () => req('/knowledge/scan', { method: 'POST' }),
+  setContacts: (platform, list) => req(`/contacts?platform=${platform}`, { method: 'PUT', body: JSON.stringify({ allowed_contacts: list }) }),
+  contactSuggestions: (platform) => req(`/contacts/suggestions?platform=${platform}`),
+  knowledge: (platform) => req(`/knowledge${platform ? `?platform=${platform}` : ''}`),
+  rescanKnowledge: (platform) => req(`/knowledge/scan${platform ? `?platform=${platform}` : ''}`, { method: 'POST' }),
   listDirs: (path = '') => req(`/fs/dirs?path=${encodeURIComponent(path)}`),
 }
 

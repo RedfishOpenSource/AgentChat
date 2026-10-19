@@ -105,7 +105,7 @@ async def test_engine_failure_produces_fallback_draft():
     """引擎彻底不可用：生成错误占位草稿进入人工流程，而不是消息丢失。"""
 
     class BoomEngine(MockReplyGenerator):
-        async def generate(self, message, history):
+        async def generate(self, message, history, kb=None):
             raise RuntimeError("LLM 服务爆炸")
 
     agent = AgentService(

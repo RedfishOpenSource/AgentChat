@@ -83,6 +83,26 @@ def test_persist_writes_yaml(hot_client):
     assert s2.engine == "llm" and s2.group_trigger == "all"
 
 
+def test_nested_settings_and_auto_send_persist_roundtrip(hot_client):
+    r = hot_client.put("/api/config", json={
+        "jev_enabled": True, "jev_provider": "mock", "llm_max_retries": 4,
+        "llm_rate_limit_per_chat": 6, "auto_send": True, "persist": True,
+    })
+    assert r.status_code == 200
+    loaded = load_settings(hot_client.app.state.settings.config_file)
+    assert loaded.jev.enabled is True
+    assert loaded.jev.provider == "mock"
+    assert loaded.llm.max_retries == 4
+    assert loaded.llm_rate_limit_per_chat == 6
+    assert loaded.auto_send is True
+
+
+def test_invalid_config_update_does_not_partially_mutate(hot_client):
+    r = hot_client.put("/api/config", json={"engine": "llm", "group_trigger": "invalid"})
+    assert r.status_code == 400
+    assert hot_client.get("/api/config").json()["engine"] == "mock"
+
+
 def test_llm_style_hot_apply_and_reject(hot_client):
     """llm_style 热更新：合法值立即生效，非法值 400。"""
     r = hot_client.put("/api/config", json={"llm_style": "formal"})

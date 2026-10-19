@@ -70,9 +70,19 @@ class LLMReplyGenerator(ReplyGenerator):
         }
         url = self.cfg.base_url.rstrip("/") + "/chat/completions"
         resp = await self._client.post(url, json=payload, headers=self._headers())
-        resp.raise_for_status()
+        if resp.is_error:
+            # 把服务商返回的错误详情（如智谱 1113「余额不足」）带进异常信息，便于前端与告警直接定位
+            detail = (resp.text or "").strip()[:300] or resp.reason_phrase
+            raise httpx.HTTPStatusError(
+                f"HTTP {resp.status_code}: {detail}", request=resp.request, response=resp
+            )
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        msg = data["choices"][0].get("message") or {}
+        content = str(msg.get("content") or "")
+        if not content.strip():
+            # 兼容思考型模型（如 glm-5.3-flash）：思考阶段 content 可能为空，正文在 reasoning_content
+            content = str(msg.get("reasoning_content") or "")
+        return content
 
     async def _chat_with_retry(self, messages: list[dict[str, str]], temperature: float | None = None) -> str:
         """带重试的 LLM 调用：仅对超时/网络错误/429/5xx 重试，指数退避；4xx 快速失败。"""
@@ -193,7 +203,9 @@ class LLMReplyGenerator(ReplyGenerator):
                 return c
         return None
 
-    async def generate(self, message: ChatMessage, history: Sequence[ChatMessage]) -> GenerationResult:
+    async def generate(
+        self, message: ChatMessage, history: Sequence[ChatMessage], kb: "KnowledgeBase | None" = None
+    ) -> GenerationResult:
         jev_on = bool(self.jev and self.jev.enabled)
 
         # 1) JEV 预判（可选）
@@ -201,8 +213,9 @@ class LLMReplyGenerator(ReplyGenerator):
         if jev_on:
             assessment = await self.jev.pre_judge(message, history)  # type: ignore[union-attr]
 
-        # RAG 知识库检索（可选）：混合检索（词面+语义向量），只检索一次，供初始生成与重写复用
-        rag_hits = await self.kb.search_hybrid(message.content) if self.kb is not None else []
+        # RAG 知识库检索（可选）：调用方按平台传入 kb（不传用构造时的默认库）
+        kb = kb if kb is not None else self.kb
+        rag_hits = await kb.search_hybrid(message.content) if kb is not None else []
 
         messages = [
             {"role": "system", "content": self._system_prompt()},

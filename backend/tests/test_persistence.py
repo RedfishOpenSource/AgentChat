@@ -27,6 +27,23 @@ def test_sqlite_roundtrip(tmp_path):
     db.close()
 
 
+def test_message_scenario_fields_survive_restart_and_old_drafts_are_retrievable(tmp_path):
+    from app.models import ChatMessage, Platform, STATUS_PENDING
+    from app.persistence import SqliteStore
+    from app.store import MessageStore
+
+    db = SqliteStore(str(tmp_path / "fields.db"))
+    store = MessageStore(max_size=1, db=db)
+    old = ChatMessage(platform=Platform.WECHAT, chat_id="group", sender="A", content="@me",
+                      msg_type="image", is_group=True, at_me=True, status=STATUS_PENDING)
+    store.add(old)
+    store.add(ChatMessage(platform=Platform.WECHAT, chat_id="other", sender="B", content="new"))
+    assert store.get(old.id).is_group is True
+    loaded = db.get_message(old.id)
+    assert loaded.msg_type == "image" and loaded.is_group is True and loaded.at_me is True
+    db.close()
+
+
 def test_restart_restores_messages_and_drafts(tmp_path):
     """重启场景：关闭应用后重新创建，历史消息与待确认草稿应被恢复。"""
     db_file = str(tmp_path / "chatagent.db")

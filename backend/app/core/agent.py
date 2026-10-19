@@ -11,6 +11,7 @@ import logging
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Sequence
 
 from ..config import Settings
@@ -25,10 +26,13 @@ from ..models import (
     DIRECTION_OUT,
     Platform,
     STATUS_BLOCKED,
+    STATUS_FAILED,
     STATUS_IGNORED,
     STATUS_PENDING,
     STATUS_REJECTED,
     STATUS_SENT,
+    STATUS_SENDING,
+    STATUS_UNKNOWN,
     type_label,
 )
 from ..rag import KnowledgeBase
@@ -55,6 +59,10 @@ class AgentService:
         self.jev = jev
         self.alerts = alerts or AlertManager()
         self.kb = kb or KnowledgeBase()
+        # 每个连接器可配置独立知识库（connector.knowledge_dir）；未配置时回退全局 self.kb
+        self.kbs: dict[Platform, KnowledgeBase] = {}
+        for platform in (Platform.WECHAT, Platform.DINGTALK):
+            self._rebuild_platform_kb(platform, log_errors=False)
         self.connectors: dict[Platform, BaseConnector] = {}
         # 图片理解（可选）：配置了 llm.vision_model 才创建
         self._vision = self._build_vision(settings)
@@ -67,6 +75,7 @@ class AgentService:
         self._timers: dict[tuple[str, str], asyncio.Task] = {}
         # 限流窗口：每会话的生成时间戳
         self._gen_windows: dict[tuple[str, str], deque[float]] = {}
+        self._recover_task: asyncio.Task | None = None
 
     # ---------- 连接器管理 ----------
     @staticmethod
@@ -88,7 +97,9 @@ class AgentService:
         return self.connectors
 
     async def start_all(self) -> None:
-        """启动所有配置为 auto_start 的连接器（默认全部不自动启动，由前端按钮控制）。"""
+        """恢复未完成的消息处理，再启动配置为 auto_start 的连接器。"""
+        if self._recover_task is None:
+            self._recover_task = asyncio.create_task(self._recover_unprocessed())
         for platform, conn in self.connectors.items():
             if not conn.settings.auto_start:
                 continue
@@ -102,6 +113,15 @@ class AgentService:
         self._publish_status()
         if self._watch_task is None:
             self._watch_task = asyncio.create_task(self._watch_connectors())
+
+    async def _recover_unprocessed(self) -> None:
+        """重新调度已持久化但没有回复的收到消息；投递中的回复由 store 转为 unknown。"""
+        incoming_items = self.store.list_messages(direction="in", limit=1000)
+        replies = self.store.list_messages(direction="out", limit=1000)
+        replied_to = {m.reply_to for m in replies if m.reply_to}
+        for incoming in incoming_items:
+            if incoming.status == "received" and incoming.id not in replied_to:
+                await self._schedule(incoming)
 
     async def stop_all(self) -> None:
         for conn in self.connectors.values():
@@ -156,20 +176,78 @@ class AgentService:
         await self._schedule(stored)
         return stored
 
+    def effective_contacts(self, platform: Platform) -> list[str]:
+        """平台生效白名单：连接器独立名单优先，未配置时回退全局名单（空 = 允许全部）。"""
+        cs = getattr(self.settings, platform.value, None)
+        own = [str(x).strip() for x in (getattr(cs, "allowed_contacts", None) or []) if str(x).strip()]
+        if own:
+            return own
+        return [str(x).strip() for x in (self.settings.allowed_contacts or []) if str(x).strip()]
+
+    def kb_for(self, platform: Platform) -> KnowledgeBase:
+        """平台生效知识库：连接器独立目录优先，未配置时回退全局知识库。"""
+        return self.kbs.get(platform) or self.kb
+
+    def _rebuild_platform_kb(self, platform: Platform, log_errors: bool = True) -> None:
+        """按连接器配置重建平台知识库：有独立目录则建专属实例，否则回退全局库。"""
+        cs = getattr(self.settings, platform.value, None)
+        path = str(getattr(cs, "knowledge_dir", "") or "").strip()
+        if not path:
+            self.kbs.pop(platform, None)
+            return
+        try:
+            kb = KnowledgeBase()
+            kb.configure(path)  # 目录不存在抛 ValueError
+            self._apply_embedding(kb, platform)
+            self.kbs[platform] = kb
+        except ValueError as exc:
+            self.kbs.pop(platform, None)
+            if log_errors:
+                logger.warning("[%s] 知识库目录不可用，回退全局知识库: %s", platform.value, exc)
+
+    def _apply_embedding(self, kb: KnowledgeBase, platform: Platform | None = None) -> None:
+        """把全局 embedding 配置应用到指定知识库（未启用时不动作）。"""
+        if not self.settings.embedding.enabled:
+            return
+        try:
+            kb.set_embedding(
+                self.settings.embedding,
+                llm_base_url=self.settings.llm.base_url,
+                llm_api_key=self.settings.llm.api_key,
+                cache_path=self._embedding_cache_path(platform),
+            )
+        except ValueError as exc:
+            logger.warning("[%s] embedding 配置无效，仅词面检索: %s", platform.value if platform else "global", exc)
+
     def _contact_allowed(self, m: ChatMessage) -> bool:
-        """联系人白名单：空列表 = 允许全部；含 "*" = 允许全部；否则按会话名/用户名精确匹配。"""
-        allowed = [str(x) for x in (self.settings.allowed_contacts or []) if str(x).strip()]
+        """联系人白名单：空列表 = 允许全部；含 "*" = 允许全部；否则按会话名/用户名精确匹配。
+
+        弹窗保存的是显示名（微信备注/昵称、钉钉群名），而消息 meta 里只有 username/cid；
+        因此匹配前先经连接器把显示名反解为 username，一并纳入比对。
+        """
+        allowed = self.effective_contacts(m.platform)
         if not allowed or "*" in allowed:
             return True
+        allowed_set = {str(x).strip() for x in allowed if str(x).strip()}
+        conn = self.connectors.get(m.platform)
+        resolver = getattr(conn, "username_by_name", None)
+        if resolver is not None:
+            for name in allowed:
+                try:
+                    u = resolver(str(name))
+                except Exception:  # noqa: BLE001
+                    u = None
+                if u:
+                    allowed_set.add(str(u))
         candidates = {m.chat_id}
         meta = m.meta or {}
         for section in ("dws", "replica"):
             section_meta = meta.get(section) or {}
-            for k in ("title", "username"):
+            for k in ("title", "username", "conversation_id"):
                 v = section_meta.get(k)
                 if v:
                     candidates.add(str(v))
-        return bool(candidates & set(allowed))
+        return bool(candidates & allowed_set)
 
     # ---------- 连发合并（debounce） ----------
     def _key(self, m: ChatMessage) -> tuple[str, str]:
@@ -200,8 +278,16 @@ class AgentService:
         msgs = self._pending.pop(key, [])
         if not msgs:
             return
-        primary = msgs[-1]
+        eligible = [m for m in msgs if self._policy_skip_reason(m) is None]
+        primary = eligible[-1] if eligible else msgs[-1]
         logger.info("[agent] 静默期结束，合并 %d 条连发消息生成回复（触发: %s）", len(msgs), primary.id)
+        for merged in msgs:
+            if merged.id == primary.id or merged.status != "received":
+                continue
+            merged.status = STATUS_IGNORED
+            merged.meta = {**merged.meta, "ignore_reason": f"连发合并到消息 {primary.id}"}
+            self.store.update(merged)
+            self.bus.publish({"type": "message_updated", "message": merged.model_dump(mode="json")})
         await self._generate_and_reply(primary)
 
     async def _generate_and_reply(self, incoming: ChatMessage) -> None:
@@ -233,7 +319,7 @@ class AgentService:
             if h.id != incoming.id
         ]
         try:
-            result = await self.engine.generate(incoming, history)
+            result = await self.engine.generate(incoming, history, kb=self.kb_for(incoming.platform))
         except Exception as exc:  # noqa: BLE001
             # 降级：引擎不可用时生成错误占位草稿，进入人工流程（消息绝不静默丢失）
             self._record_llm_outcome(False, str(exc))
@@ -254,11 +340,9 @@ class AgentService:
             return
         self._record_llm_outcome(True)
 
-        # 安全约束：blocked 永不自动发送；auto_send=True 时普通草稿直接发送（前端按钮可切）
+        # blocked 永不自动发送；普通草稿开启 auto_send 后才进入投递流程。
         if result.blocked:
             status = STATUS_BLOCKED
-        elif self.settings.auto_send:
-            status = STATUS_SENT
         else:
             status = STATUS_PENDING
 
@@ -279,9 +363,9 @@ class AgentService:
         logger.info(
             "[agent] 已生成回复 %s -> %s [%s]%s",
             reply.id, incoming.id, status,
-            "（已自动发送）" if status == STATUS_SENT else "（等待人工确认）",
+            "（自动投递中）" if self.settings.auto_send and status == STATUS_PENDING else "（等待人工确认）",
         )
-        if status == STATUS_SENT:  # 仅普通草稿；blocked 永不自动发送
+        if self.settings.auto_send and status == STATUS_PENDING:
             await self._dispatch(reply)
 
     async def _handle_non_text(self, incoming: ChatMessage) -> None:
@@ -381,16 +465,75 @@ class AgentService:
         return None
 
     # ---------- 配置热更新 ----------
+    def validate_config_updates(self, updates: dict) -> None:
+        """验证整批热更新字段，保证调用方可以先校验再持久化。"""
+        s = self.settings
+        if updates.get("llm_base_url") is not None:
+            try:
+                url = urlsplit(updates["llm_base_url"].strip())
+                valid = url.scheme in ("http", "https") and bool(url.hostname) and not (url.username or url.password or url.query or url.fragment)
+                url.port  # 校验端口
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ValueError("API URL 必须是有效的 HTTP(S) Base URL，不包含凭据、查询参数或片段")
+        if updates.get("llm_model") is not None and not updates["llm_model"].strip():
+            raise ValueError("模型名称不能为空")
+        if updates.get("engine") is not None and updates["engine"] not in ("mock", "llm", "acp"):
+            raise ValueError("engine 仅支持 mock / llm / acp")
+        if updates.get("acp_mode") is not None and updates["acp_mode"] not in ("acp", "pi"):
+            raise ValueError("acp_mode 仅支持 acp / pi")
+        for key in ("acp_command", "acp_args", "acp_cwd", "acp_env_name", "acp_env_key"):
+            if updates.get(key) is not None:
+                updates[key] = str(updates[key]).strip()
+        if updates.get("acp_cwd") and not Path(updates["acp_cwd"]).expanduser().is_dir():
+            raise ValueError(f"Agent 工作空间目录不存在: {updates['acp_cwd']}")
+        if updates.get("acp_timeout") is not None:
+            if not (5.0 <= float(updates["acp_timeout"]) <= 3600):
+                raise ValueError("acp_timeout 范围 5-3600 秒")
+        if updates.get("jev_provider") is not None and updates["jev_provider"] not in ("mock", "typesafe"):
+            raise ValueError("jev_provider 仅支持 mock / typesafe")
+        if updates.get("num_candidates") is not None and not 1 <= int(updates["num_candidates"]) <= 5:
+            raise ValueError("num_candidates 范围 1-5")
+        if updates.get("temperature") is not None:
+            float(updates["temperature"])
+        if updates.get("llm_max_retries") is not None:
+            int(updates["llm_max_retries"])
+        if updates.get("llm_rate_limit_per_chat") is not None:
+            int(updates["llm_rate_limit_per_chat"])
+        if updates.get("debounce_seconds") is not None:
+            float(updates["debounce_seconds"])
+        if updates.get("llm_style") is not None:
+            from ..engine.llm import STYLE_PRESETS
+            if updates["llm_style"] not in STYLE_PRESETS:
+                raise ValueError(f"llm_style 仅支持 {' / '.join(STYLE_PRESETS)}")
+        if updates.get("group_trigger") is not None and updates["group_trigger"] not in ("at-mention", "all", "listen-only"):
+            raise ValueError("group_trigger 仅支持 at-mention / all / listen-only")
+        if updates.get("non_text_action") is not None and updates["non_text_action"] not in ("placeholder", "skip"):
+            raise ValueError("non_text_action 仅支持 placeholder / skip")
+        if updates.get("alert_channel") is not None and updates["alert_channel"] not in ("off", "wechat-filehelper", "dingtalk-self"):
+            raise ValueError("alert_channel 仅支持 off / wechat-filehelper / dingtalk-self")
+        if updates.get("knowledge_dir"):
+            if not Path(str(updates["knowledge_dir"]).strip()).expanduser().is_dir():
+                raise ValueError(f"知识库目录不存在或不是文件夹: {updates['knowledge_dir']}")
+        for key in ("wechat_knowledge_dir", "dingtalk_knowledge_dir"):
+            if updates.get(key):
+                if not Path(str(updates[key]).strip()).expanduser().is_dir():
+                    raise ValueError(f"知识库目录不存在或不是文件夹: {updates[key]}")
+        if updates.get("embedding_enabled") and not s.embedding.model:
+            raise ValueError("embedding.model 未配置，无法启用语义检索")
+
     async def apply_config(self, updates: dict) -> dict:
         """热更新配置（子集），返回变更清单。不支持的项抛 ValueError。"""
+        self.validate_config_updates(updates)
         s = self.settings
         changed: list[str] = []
         rebuild = False
 
         engine = updates.get("engine")
         if engine is not None:
-            if engine not in ("mock", "llm"):
-                raise ValueError("engine 仅支持 mock / llm")
+            if engine not in ("mock", "llm", "acp"):
+                raise ValueError("engine 仅支持 mock / llm / acp")
             if engine != s.engine:
                 s.engine = engine
                 rebuild = True
@@ -402,8 +545,6 @@ class AgentService:
                 self.jev.enabled = s.jev.enabled
             changed.append("jev_enabled")
         if updates.get("jev_provider") is not None:
-            if updates["jev_provider"] not in ("mock", "typesafe"):
-                raise ValueError("jev_provider 仅支持 mock / typesafe")
             s.jev.provider = updates["jev_provider"]
             rebuild = True
             changed.append("jev_provider")
@@ -411,6 +552,40 @@ class AgentService:
             s.jev.api_key = str(updates["jev_api_key"])
             rebuild = True
             changed.append("jev_api_key")
+
+        llm_config_changed = False
+        for key, attr in (("llm_base_url", "base_url"), ("llm_model", "model"), ("llm_api_key", "api_key")):
+            value = updates.get(key)
+            if value is not None and str(value).strip():
+                normalized = str(value).strip()
+                if getattr(s.llm, attr) != normalized:
+                    setattr(s.llm, attr, normalized)
+                    llm_config_changed = True
+                    changed.append(key)
+        if llm_config_changed:
+            rebuild = True
+
+        acp_changed = False
+        for key, attr in (("acp_mode", "mode"), ("acp_command", "command"), ("acp_args", "args"),
+                          ("acp_cwd", "cwd"), ("acp_env_name", "env_name"), ("acp_env_key", "env_key")):
+            value = updates.get(key)
+            if value is not None:
+                normalized = str(value).strip()
+                if getattr(s.acp, attr) != normalized:
+                    setattr(s.acp, attr, normalized)
+                    acp_changed = True
+                    changed.append(key)
+        if updates.get("acp_timeout") is not None:
+            tv = max(5.0, float(updates["acp_timeout"]))
+            if s.acp.timeout != tv:
+                s.acp.timeout = tv
+                acp_changed = True
+                changed.append("acp_timeout")
+        if acp_changed:
+            rebuild = True
+        # engine=acp 必须有启动命令（首次切换或修改 acp 配置时校验）
+        if s.engine == "acp" and (updates.get("engine") == "acp" or acp_changed) and not s.acp.command.strip():
+            raise ValueError("engine=acp 需要先配置 Agent 启动命令（acp_command）")
 
         if updates.get("num_candidates") is not None:
             nc = int(updates["num_candidates"])
@@ -425,9 +600,6 @@ class AgentService:
             s.llm.max_retries = max(0, int(updates["llm_max_retries"]))
             changed.append("llm_max_retries")
         if updates.get("llm_style") is not None:
-            from ..engine.llm import STYLE_PRESETS  # noqa: PLC0415 —— 避免模块级循环依赖
-            if updates["llm_style"] not in STYLE_PRESETS:
-                raise ValueError(f"llm_style 仅支持 {' / '.join(STYLE_PRESETS)}")
             s.llm.style = updates["llm_style"]  # 生成器持有同一 cfg 引用，热生效
             changed.append("llm_style")
         if updates.get("knowledge_dir") is not None:
@@ -438,28 +610,34 @@ class AgentService:
                 self.kb.reset()
             s.knowledge_dir = path
             changed.append("knowledge_dir")
+        for key, platform in (("wechat_knowledge_dir", Platform.WECHAT), ("dingtalk_knowledge_dir", Platform.DINGTALK)):
+            if updates.get(key) is not None:
+                path = str(updates[key]).strip()
+                cs = getattr(s, platform.value)
+                cs.knowledge_dir = path
+                self._rebuild_platform_kb(platform)  # 空路径回退全局库；目录不存在抛 ValueError → 400
+                changed.append(key)
         if updates.get("embedding_enabled") is not None:
             s.embedding.enabled = bool(updates["embedding_enabled"])
             try:
-                self.kb.set_embedding(
-                    s.embedding,
-                    llm_base_url=s.llm.base_url,
-                    llm_api_key=s.llm.api_key,
-                    cache_path=self._embedding_cache_path(),
-                )
+                for kb_inst in [self.kb, *self.kbs.values()]:
+                    kb_inst.set_embedding(
+                        s.embedding,
+                        llm_base_url=s.llm.base_url,
+                        llm_api_key=s.llm.api_key,
+                        cache_path=self._embedding_cache_path(
+                            next((p for p, k in self.kbs.items() if k is kb_inst), None)
+                        ),
+                    )
                 changed.append("embedding_enabled")
             except ValueError as exc:
                 s.embedding.enabled = not s.embedding.enabled  # 回滚，保持配置一致
                 raise ValueError(f"embedding 配置无效: {exc}") from exc
 
         if updates.get("group_trigger") is not None:
-            if updates["group_trigger"] not in ("at-mention", "all", "listen-only"):
-                raise ValueError("group_trigger 仅支持 at-mention / all / listen-only")
             s.group_trigger = updates["group_trigger"]
             changed.append("group_trigger")
         if updates.get("non_text_action") is not None:
-            if updates["non_text_action"] not in ("placeholder", "skip"):
-                raise ValueError("non_text_action 仅支持 placeholder / skip")
             s.non_text_action = updates["non_text_action"]
             changed.append("non_text_action")
         if updates.get("debounce_seconds") is not None:
@@ -485,6 +663,11 @@ class AgentService:
         if updates.get("allowed_contacts") is not None:
             s.allowed_contacts = [str(x).strip() for x in updates["allowed_contacts"] if str(x).strip()]
             changed.append("allowed_contacts")
+        for key, platform in (("wechat_allowed_contacts", Platform.WECHAT), ("dingtalk_allowed_contacts", Platform.DINGTALK)):
+            if updates.get(key) is not None:
+                cs = getattr(s, platform.value)
+                cs.allowed_contacts = [str(x).strip() for x in updates[key] if str(x).strip()]
+                changed.append(key)
         if updates.get("auto_send") is not None:
             s.auto_send = bool(updates["auto_send"])
             changed.append("auto_send")
@@ -552,38 +735,50 @@ class AgentService:
         self.bus.publish({"type": "message_updated", "message": m.model_dump(mode="json")})
         logger.info("[agent] 消息已忽略(%s): %s", reason, m.id)
 
-    async def _dispatch(self, reply: ChatMessage) -> None:
-        """发送回复到平台。仅允许在 approve_reply() 人工确认后被调用。"""
+    async def _dispatch(self, reply: ChatMessage) -> str:
+        """统一投递入口，返回 sent/failed/unknown，且先广播 sending 状态。"""
         conn = self.connectors.get(reply.platform)
+        reply.status = STATUS_SENDING
+        self.store.update(reply)
+        self.bus.publish({"type": "reply_updated", "message": reply.model_dump(mode="json")})
         if conn is None:
-            logger.warning("平台 %s 无可用连接器，回复仅记录不发送", reply.platform)
-            return
-        await conn.send_reply(reply)
+            logger.warning("平台 %s 无可用连接器，回复未发送", reply.platform)
+            result = STATUS_FAILED
+        else:
+            try:
+                result = STATUS_SENT if await conn.send_reply(reply) else STATUS_FAILED
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("回复投递结果不确定: %s", exc)
+                reply.meta = {**reply.meta, "dispatch_error": str(exc)[:200]}
+                result = STATUS_UNKNOWN
+        reply.status = result
+        self.store.update(reply)
+        self.bus.publish({"type": "reply_updated", "message": reply.model_dump(mode="json")})
+        return result
 
     # ---------- 人工审核（唯一的发送路径） ----------
-    async def approve_reply(self, reply_id: str, content: str | None = None) -> ChatMessage:
-        """人工确认发送。
-
-        content: 可选的草稿编辑结果；提供且非空则发送编辑后的内容（原稿保留在 meta.edited_from）。
-        """
+    async def approve_reply(
+        self, reply_id: str, content: str | None = None, confirm_unknown: bool = False
+    ) -> ChatMessage:
+        """人工确认发送；结果不确定的投递必须由人工明确确认后才能重试。"""
         reply = self.store.get(reply_id)
         if reply is None or reply.direction != DIRECTION_OUT:
             raise KeyError(reply_id)
-        if reply.status not in (STATUS_PENDING, STATUS_BLOCKED):
+        allowed = (STATUS_PENDING, STATUS_BLOCKED, STATUS_FAILED)
+        if reply.status == STATUS_UNKNOWN and not confirm_unknown:
+            raise ValueError("上次投递结果不确定，请核对平台后再次确认重试")
+        if reply.status not in allowed and reply.status != STATUS_UNKNOWN:
             raise ValueError(f"回复当前状态为 {reply.status}，不能发送")
         if content is not None and content.strip() and content != reply.content:
             original = reply.content
             reply.content = content.strip()
             reply.meta = {**reply.meta, "edited_from": original}
-        reply.status = STATUS_SENT
-        self.store.update(reply)
+        result = await self._dispatch(reply)
         self.store.audit(
             "admin", "approve", reply.id,
-            json.dumps({"content": reply.content, "edited_from": reply.meta.get("edited_from")},
-                       ensure_ascii=False),
+            json.dumps({"content": reply.content, "edited_from": reply.meta.get("edited_from"),
+                        "result": result}, ensure_ascii=False),
         )
-        await self._dispatch(reply)
-        self.bus.publish({"type": "reply_updated", "message": reply.model_dump(mode="json")})
         return reply
 
     async def select_candidate(self, reply_id: str, index: int) -> ChatMessage:
@@ -591,7 +786,7 @@ class AgentService:
         reply = self.store.get(reply_id)
         if reply is None or reply.direction != DIRECTION_OUT:
             raise KeyError(reply_id)
-        if reply.status not in (STATUS_PENDING, STATUS_BLOCKED):
+        if reply.status not in (STATUS_PENDING, STATUS_BLOCKED, STATUS_FAILED, STATUS_UNKNOWN):
             raise ValueError(f"回复当前状态为 {reply.status}，不能切换候选")
         cands = (reply.meta or {}).get("candidates") or []
         if not (0 <= index < len(cands)):
@@ -612,7 +807,7 @@ class AgentService:
         reply = self.store.get(reply_id)
         if reply is None or reply.direction != DIRECTION_OUT:
             raise KeyError(reply_id)
-        if reply.status not in (STATUS_PENDING, STATUS_BLOCKED):
+        if reply.status not in (STATUS_PENDING, STATUS_BLOCKED, STATUS_FAILED, STATUS_UNKNOWN):
             raise ValueError(f"回复当前状态为 {reply.status}，不能驳回")
         reply.status = STATUS_REJECTED
         self.store.update(reply)
@@ -621,7 +816,12 @@ class AgentService:
         return reply
 
     # ---------- 直接对话（前端“对话测试”，走同一个生成器接口） ----------
-    async def direct_chat(self, content: str, chat_id: str = "web-demo") -> tuple[ChatMessage, ChatMessage]:
+    async def direct_chat(
+        self, content: str, chat_id: str = "web-demo", platform: str | None = None
+    ) -> tuple[ChatMessage, ChatMessage]:
+        # 可选指定平台：用该平台的知识库测试（如钉钉独立知识库）；web 用全局库
+        plat = Platform(platform) if platform in ("wechat", "dingtalk") else Platform.WEB
+        kb = self.kb_for(plat) if plat != Platform.WEB else None
         user_msg = ChatMessage(platform=Platform.WEB, chat_id=chat_id, sender="user", content=content)
         self.store.add(user_msg)
         self.bus.publish({"type": "message", "message": user_msg.model_dump(mode="json")})
@@ -629,7 +829,7 @@ class AgentService:
             h for h in self.store.history(Platform.WEB, chat_id, limit=self.settings.llm.max_history)
             if h.id != user_msg.id
         ]
-        result = await self.engine.generate(user_msg, history)
+        result = await self.engine.generate(user_msg, history, kb=kb)
         reply = ChatMessage(
             platform=Platform.WEB,
             chat_id=chat_id,
@@ -645,10 +845,12 @@ class AgentService:
         return user_msg, reply
 
     # ---------- 退出 ----------
-    def _embedding_cache_path(self) -> str:
-        """向量缓存文件路径：与数据库同目录（db 为 :memory: 时用当前目录）。"""
+    def _embedding_cache_path(self, platform: Platform | None = None) -> str:
+        """向量缓存文件路径：与数据库同目录（db 为 :memory: 时用当前目录）；平台专属库独立缓存避免混写。"""
         db = Path(self.settings.db_path)
-        return str(db.parent / "rag_embeddings.json") if str(db.parent) != "." else "rag_embeddings.json"
+        base_dir = db.parent if str(db.parent) != "." else Path(".")
+        name = f"rag_embeddings.{platform.value}.json" if platform else "rag_embeddings.json"
+        return str(base_dir / name)
 
     async def shutdown(self) -> None:
         # 尽力冲刷未处理的连发积压，避免丢草稿（消息已落盘，草稿生成后也会落盘）
@@ -660,6 +862,9 @@ class AgentService:
         for t in self._timers.values():
             t.cancel()
         self._timers.clear()
+        if self._recover_task is not None:
+            self._recover_task.cancel()
+            self._recover_task = None
         if self._watch_task is not None:
             self._watch_task.cancel()
             self._watch_task = None
@@ -678,7 +883,8 @@ class AgentService:
                 await self._vision.aclose()
             except Exception:  # noqa: BLE001
                 pass
-        try:
-            await self.kb.aclose()
-        except Exception:  # noqa: BLE001
-            pass
+        for kb_inst in [self.kb, *self.kbs.values()]:
+            try:
+                await kb_inst.aclose()
+            except Exception:  # noqa: BLE001
+                pass

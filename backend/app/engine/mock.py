@@ -15,7 +15,10 @@ class MockReplyGenerator(ReplyGenerator):
     _BYE = ("再见", "拜拜", "bye", "晚安")
     _QUESTION_MARKS = ("?", "？")
 
-    async def generate(self, message: ChatMessage, history: Sequence[ChatMessage]) -> GenerationResult:
+    async def generate(
+        self, message: ChatMessage, history: Sequence[ChatMessage], kb=None
+    ) -> GenerationResult:
+        del kb  # mock 引擎不使用知识库，仅为兼容接口签名
         text = message.content.strip()
         low = text.lower()
 

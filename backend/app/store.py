@@ -6,7 +6,7 @@ import logging
 from collections import deque
 from typing import Optional
 
-from .models import ChatMessage, Platform, DIRECTION_OUT
+from .models import ChatMessage, Platform, DIRECTION_OUT, STATUS_SENDING, STATUS_UNKNOWN
 from .persistence import SqliteStore
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,11 @@ class MessageStore:
         for m in msgs:
             if m.id in self._index:
                 continue
+            if m.status == STATUS_SENDING:
+                # 进程在连接器调用期间退出，不能假设平台未收到消息。
+                m.status = STATUS_UNKNOWN
+                m.meta = {**m.meta, "dispatch_error": "服务重启时投递未完成，请核对平台后决定是否重试"}
+                self._db.upsert_message(m)
             self._messages.append(m)
             self._index[m.id] = m
             n += 1
@@ -39,11 +44,7 @@ class MessageStore:
     def add(self, m: ChatMessage) -> ChatMessage:
         if m.id in self._index:  # 幂等，防止重复处理
             return self._index[m.id]
-        if len(self._messages) == self._messages.maxlen:
-            old = self._messages[0]
-            self._index.pop(old.id, None)
-        self._messages.append(m)
-        self._index[m.id] = m
+        self._remember(m)
         if self._db is not None:
             self._db.upsert_message(m)
         return m
@@ -58,7 +59,25 @@ class MessageStore:
             self._db.insert_audit(actor, action, message_id, detail)
 
     def get(self, msg_id: str) -> Optional[ChatMessage]:
-        return self._index.get(msg_id)
+        found = self._index.get(msg_id)
+        if found is not None:
+            return found
+        if self._db is not None:
+            items = self._db.get_message(msg_id)
+            if items is not None:
+                self._remember(items)
+                return items
+        return None
+
+    def _remember(self, m: ChatMessage) -> None:
+        if m.id in self._index:
+            self._index[m.id] = m
+            return
+        if len(self._messages) == self._messages.maxlen:
+            old = self._messages.popleft()
+            self._index.pop(old.id, None)
+        self._messages.append(m)
+        self._index[m.id] = m
 
     def set_status(self, msg_id: str, status: str) -> Optional[ChatMessage]:
         m = self._index.get(msg_id)
@@ -69,6 +88,8 @@ class MessageStore:
     def history(self, platform: Platform | str, chat_id: str, limit: int = 12) -> list[ChatMessage]:
         """某会话最近 limit 条消息（两个方向都有，时间升序）。"""
         p = platform.value if isinstance(platform, Platform) else str(platform)
+        if self._db is not None:
+            return self._db.list_messages(platform=p, chat_id=chat_id, limit=limit)
         items = [m for m in self._messages if m.platform.value == p and m.chat_id == chat_id]
         return items[-limit:]
 
@@ -77,8 +98,12 @@ class MessageStore:
         platform: str | None = None,
         chat_id: str | None = None,
         direction: str | None = None,
+        status: str | None = None,
         limit: int = 200,
+        offset: int = 0,
     ) -> list[ChatMessage]:
+        if self._db is not None:
+            return self._db.list_messages(platform, chat_id, direction, status, limit, offset)
         items = list(self._messages)
         if platform:
             items = [m for m in items if m.platform.value == platform]
@@ -86,16 +111,23 @@ class MessageStore:
             items = [m for m in items if m.chat_id == chat_id]
         if direction:
             items = [m for m in items if m.direction == direction]
-        return items[-limit:]
+        if status:
+            items = [m for m in items if m.status == status]
+        return items[-limit - offset: -offset if offset else None] if offset else items[-limit:]
 
-    def replies(self, status: str | None = None, limit: int = 100) -> list[ChatMessage]:
+    def replies(self, status: str | None = None, limit: int = 100, offset: int = 0) -> list[ChatMessage]:
+        if self._db is not None:
+            return self._db.list_messages(direction=DIRECTION_OUT, status=status, limit=limit, offset=offset)
         items = [m for m in self._messages if m.direction == DIRECTION_OUT]
         if status:
             items = [m for m in items if m.status == status]
-        return items[-limit:]
+        return items[-limit - offset: -offset if offset else None] if offset else items[-limit:]
+
+    def count_all(self) -> int:
+        return self._db.count_messages() if self._db is not None else len(self._messages)
 
     def count(self) -> int:
-        return len(self._messages)
+        return self.count_all()
 
 
 class EventBus:

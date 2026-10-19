@@ -92,6 +92,53 @@ async def test_approve_with_content_edit():
 
 
 @pytest.mark.asyncio
+async def test_failed_dispatch_is_not_marked_sent_and_can_retry():
+    agent = build_agent(make_settings())
+    conn = agent.connectors[Platform.WECHAT]
+    msg = await conn.inject("retry-chat", "甲", "你好")
+    await agent.ingest(msg)
+    reply = agent.store.list_messages(chat_id="retry-chat", direction="out")[0]
+
+    async def fail(_message):
+        return False
+
+    conn.send_reply = fail
+    failed = await agent.approve_reply(reply.id)
+    assert failed.status == "failed"
+    assert failed.status != "sent"
+
+    conn.send_reply = lambda message: _success(message, conn)
+    sent = await agent.approve_reply(reply.id)
+    assert sent.status == "sent"
+    await agent.stop_all()
+
+
+async def _success(message, conn):
+    conn.sent.append(message)
+    return True
+
+
+@pytest.mark.asyncio
+async def test_unknown_dispatch_requires_explicit_confirmation():
+    agent = build_agent(make_settings())
+    conn = agent.connectors[Platform.WECHAT]
+    msg = await conn.inject("unknown-chat", "甲", "你好")
+    await agent.ingest(msg)
+    reply = agent.store.list_messages(chat_id="unknown-chat", direction="out")[0]
+
+    async def uncertain(_message):
+        raise TimeoutError("timeout")
+
+    conn.send_reply = uncertain
+    assert (await agent.approve_reply(reply.id)).status == "unknown"
+    with pytest.raises(ValueError):
+        await agent.approve_reply(reply.id)
+    conn.send_reply = lambda message: _success(message, conn)
+    assert (await agent.approve_reply(reply.id, confirm_unknown=True)).status == "sent"
+    await agent.stop_all()
+
+
+@pytest.mark.asyncio
 async def test_approve_and_reject():
     agent = build_agent(make_settings())
     conn = agent.connectors[Platform.WECHAT]

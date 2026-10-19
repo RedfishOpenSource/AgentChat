@@ -86,3 +86,35 @@ def test_contacts_api_runtime_update():
         client.put("/api/contacts", json={"allowed_contacts": ["wl1"]})
         r = client.post("/api/simulate", json={"platform": "dingtalk", "chat_id": "wl1", "content": "hi3"})
         assert r.json()["reply"] is not None
+
+
+def test_contacts_persist_to_config_file(tmp_path):
+        """白名单保存写回 config.yaml（全局 + 平台独立），重启后由 load_settings 恢复。"""
+        import yaml as _yaml
+
+        from app.config import load_settings
+
+        cfg_file = tmp_path / "config.yaml"
+        settings = make_settings(config_file=str(cfg_file))
+        with TestClient(create_app(settings), client=("127.0.0.1", 12345)) as client:
+            r = client.put("/api/contacts", json={"allowed_contacts": ["张三", "项目群"]})
+            assert r.status_code == 200 and r.json()["persisted"] is True
+            r2 = client.put("/api/contacts?platform=wechat", json={"allowed_contacts": ["文件传输助手"]})
+            assert r2.status_code == 200 and r2.json()["persisted"] is True
+            assert r2.json()["allowed_contacts"] == ["文件传输助手"]
+
+        data = _yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+        assert data["allowed_contacts"] == ["张三", "项目群"]
+        assert data["wechat"]["allowed_contacts"] == ["文件传输助手"]
+
+        loaded = load_settings(str(cfg_file))
+        assert loaded.allowed_contacts == ["张三", "项目群"]
+        assert loaded.wechat.allowed_contacts == ["文件传输助手"]
+
+
+def test_contacts_no_config_file_still_applies_runtime():
+        """未配置配置文件路径（单测默认）：仅改内存，响应 persisted=False。"""
+        with TestClient(create_app(make_settings(config_file="")), client=("127.0.0.1", 12345)) as client:
+            r = client.put("/api/contacts", json={"allowed_contacts": ["甲"]})
+            assert r.json()["persisted"] is False
+            assert client.get("/api/contacts").json()["allowed_contacts"] == ["甲"]

@@ -1,84 +1,108 @@
 :root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --panel-2: #1e222b;
-  --border: #2a2f3a;
-  --text: #e8eaed;
-  --text-dim: #9aa3b2;
-  --accent: #4f8cff;
-  --green: #2aae67;
-  --blue: #0089ff;
-  --orange: #f0a020;
-  --red: #e5534b;
+  color-scheme: dark;
+  --bg: #0b0e12;
+  --bg-raised: #10151b;
+  --panel: #141a21;
+  --panel-2: #1b232c;
+  --panel-3: #222c36;
+  --border: #2a3742;
+  --border-soft: rgba(143, 166, 180, 0.14);
+  --text: #edf3f5;
+  --text-dim: #8d9ca6;
+  --text-muted: #64747e;
+  --accent: #55b8c8;
+  --accent-strong: #7bd2de;
+  --green: #55c98a;
+  --blue: #6ca9e8;
+  --orange: #e6ad62;
+  --red: #e97970;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.24);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-
-html, body, #app { height: 100%; }
-
+html, body, #app { min-width: 320px; height: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  font-family: Inter, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
-
+button, input, select, textarea { font: inherit; }
 button {
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
   cursor: pointer;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 6px 12px;
   font-size: 13px;
-  transition: background 0.15s;
 }
-button:hover { background: #262c38; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover { background: #3d7bef; }
-button.success { background: var(--green); border-color: var(--green); color: #fff; }
-button.danger { background: transparent; border-color: var(--red); color: var(--red); }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-
+button:hover:not(:disabled) { background: var(--panel-3); border-color: #435462; }
+button:active:not(:disabled) { transform: translateY(1px); }
+button.primary { background: #287985; border-color: #328d99; color: #f2feff; }
+button.primary:hover:not(:disabled) { background: #31909b; border-color: #48a6b2; }
+button.success { background: #246c4b; border-color: #34845e; color: #e9fff2; }
+button.danger { background: rgba(153, 66, 61, .12); border-color: rgba(233, 121, 112, .38); color: #f19a91; }
+button:disabled { opacity: .48; cursor: not-allowed; }
 input, select, textarea {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 7px 10px;
-  font-size: 13px;
   width: 100%;
-  outline: none;
-}
-input:focus, select:focus, textarea:focus { border-color: var(--accent); }
-
-.tag {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 18px;
-  vertical-align: middle;
-}
-.tag.wechat { background: rgba(42, 174, 103, 0.15); color: var(--green); }
-.tag.dingtalk { background: rgba(0, 137, 255, 0.15); color: var(--blue); }
-.tag.web { background: rgba(154, 163, 178, 0.15); color: var(--text-dim); }
-.tag.pending { background: rgba(240, 160, 32, 0.15); color: var(--orange); }
-.tag.sent { background: rgba(42, 174, 103, 0.15); color: var(--green); }
-.tag.blocked { background: rgba(229, 83, 75, 0.18); color: var(--red); }
-.tag.rejected { background: rgba(154, 163, 178, 0.15); color: var(--text-dim); }
-.tag.ignored { background: rgba(154, 163, 178, 0.1); color: var(--text-dim); opacity: 0.7; }
-
-.card {
-  background: var(--panel);
+  min-height: 36px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 5px;
+  outline: none;
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: 13px;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(85, 184, 200, .12); }
+button:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
+input::placeholder, textarea::placeholder { color: var(--text-muted); }
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 17px;
+  white-space: nowrap;
+}
+.tag.wechat { background: rgba(85, 201, 138, .1); color: var(--green); border-color: rgba(85, 201, 138, .2); }
+.tag.dingtalk { background: rgba(108, 169, 232, .1); color: var(--blue); border-color: rgba(108, 169, 232, .2); }
+.tag.web { background: rgba(143, 156, 166, .1); color: var(--text-dim); }
+.tag.pending, .tag.unknown { background: rgba(230, 173, 98, .1); color: var(--orange); border-color: rgba(230, 173, 98, .2); }
+.tag.sent { background: rgba(85, 201, 138, .1); color: var(--green); border-color: rgba(85, 201, 138, .2); }
+.tag.sending { background: rgba(108, 169, 232, .1); color: var(--blue); border-color: rgba(108, 169, 232, .2); }
+.tag.failed, .tag.blocked { background: rgba(233, 121, 112, .1); color: var(--red); border-color: rgba(233, 121, 112, .2); }
+.tag.rejected, .tag.ignored { background: rgba(143, 156, 166, .08); color: var(--text-dim); border-color: var(--border-soft); }
+.card {
+  background: linear-gradient(145deg, rgba(22, 30, 38, .98), rgba(17, 23, 30, .98));
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
   padding: 14px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .12);
 }
 .card h3 {
-  font-size: 13px;
-  color: var(--text-dim);
-  font-weight: 600;
-  margin-bottom: 10px;
-  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: #c8d4d9;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 650;
+}
+.card h3::before { content: ''; width: 3px; height: 13px; border-radius: 2px; background: var(--accent); }
+::selection { background: rgba(85, 184, 200, .28); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #293741; border: 2px solid transparent; border-radius: 10px; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: #40535f; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }

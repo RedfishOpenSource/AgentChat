@@ -37,31 +37,18 @@ function modeLabel(mode) {
 </template>
 
 <style scoped>
-.conn {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 8px;
-  background: var(--panel-2);
-}
+.conn { margin: 0; padding: 10px 0; border: 0; border-top: 1px solid var(--border-soft); border-radius: 0; background: transparent; }
 .row { display: flex; align-items: center; gap: 8px; }
 .row + .row { margin-top: 8px; }
-.mode { font-size: 12px; color: var(--text-dim); }
+.mode { color: var(--text-muted); font-size: 10px; }
 .spacer { flex: 1; }
-.dot { width: 9px; height: 9px; border-radius: 50%; margin-left: auto; }
-.dot.running { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.dot.stopped { background: var(--text-dim); }
-.dot.error { background: var(--red); box-shadow: 0 0 6px var(--red); }
-.status-text { font-size: 12px; color: var(--text-dim); }
+.dot { width: 7px; height: 7px; margin-left: auto; border-radius: 50%; }
+.dot.running { background: var(--green); box-shadow: 0 0 8px rgba(85, 201, 138, .4); }
+.dot.stopped { background: var(--text-muted); }
+.dot.error { background: var(--red); box-shadow: 0 0 8px rgba(233, 121, 112, .4); }
+.status-text { color: var(--text-dim); font-size: 11px; }
 .status-text.error { color: var(--red); }
-.sm { padding: 3px 10px; font-size: 12px; }
-.err {
-  margin-top: 8px;
-  font-size: 11px;
-  color: var(--red);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.dim { color: var(--text-dim); font-size: 12px; }
+.sm { min-height: 28px; padding: 4px 9px; font-size: 10px; }
+.err { margin-top: 7px; overflow: hidden; color: var(--red); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.dim { color: var(--text-dim); font-size: 11px; }
 </style>

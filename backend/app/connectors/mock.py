@@ -22,13 +22,16 @@ class MockConnector(BaseConnector):
         self._inbox: list[ChatMessage] = []
         self.sent: list[ChatMessage] = []
 
-    async def inject(self, chat_id: str, sender: str, content: str, enqueue: bool = False) -> ChatMessage:
+    async def inject(self, chat_id: str, sender: str, content: str, enqueue: bool = False,
+                     msg_type: str = "text", is_group: bool | None = None,
+                     at_me: bool | None = None) -> ChatMessage:
         """注入一条模拟的新消息。
 
         enqueue=False: 返回消息但不进入监听队列（调用方随后直接 ingest，时序确定）
         enqueue=True:  进入队列，由监听循环 poll 拾取（用于测试监听链路）
         """
-        msg = ChatMessage(platform=self.platform, chat_id=chat_id, sender=sender, content=content)
+        msg = ChatMessage(platform=self.platform, chat_id=chat_id, sender=sender, content=content,
+                          msg_type=msg_type, is_group=is_group, at_me=at_me)
         if enqueue:
             self._inbox.append(msg)
         return msg
@@ -39,12 +42,13 @@ class MockConnector(BaseConnector):
         msgs, self._inbox = self._inbox, []
         return msgs
 
-    async def send_reply(self, message: ChatMessage) -> None:
+    async def send_reply(self, message: ChatMessage) -> bool:
         self.sent.append(message)
         logger.info(
             "[%s] (mock) 已发送回复 -> chat=%s: %s",
             self.platform.value, message.chat_id, message.content[:50],
         )
+        return True
 
 
 def is_mock_connector(conn: BaseConnector) -> bool:

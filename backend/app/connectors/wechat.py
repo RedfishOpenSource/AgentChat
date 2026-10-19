@@ -13,6 +13,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import threading
 import time
@@ -20,7 +22,7 @@ from collections import deque
 from typing import Any, Callable, Sequence
 
 from ..config import ConnectorSettings
-from ..models import ChatMessage, Platform, now_ms, type_label
+from ..models import ChatMessage, Platform, gen_id, now_ms, type_label
 from .base import BaseConnector, ConnectorStartError, EmitFn
 
 logger = logging.getLogger(__name__)
@@ -82,7 +84,10 @@ def _parse_replica_msg(
             if v:
                 meta["replica"][key] = v
                 break
+    external_id = str(msg.get("message_id") or msg.get("msg_id") or msg.get("id") or "")
+    stable_id = "wechat_" + hashlib.sha256(f"{username}:{external_id}".encode()).hexdigest()[:24] if external_id else gen_id("msg")
     return ChatMessage(
+        id=stable_id,
         platform=Platform.WECHAT,
         chat_id=chat_name,
         sender=sender,
@@ -196,6 +201,57 @@ class WeChatReplicaConnector(BaseConnector):
         except Exception:  # noqa: BLE001
             return ""
 
+    async def list_contacts(self) -> list[tuple[str, str]]:
+        """最近会话列表（显示名, username），供前端联系人弹窗选择。
+
+        注意：WeChatDB.get_sessions() 只返回 username 等会话元信息，不含昵称/备注，
+        必须逐个用 get_nickname() 查 contact.db 解析显示名（备注优先，其次昵称）。
+        读会话列表是只读操作，不依赖监听是否启动：_db 未初始化时惰性创建。
+        """
+
+        def _load() -> list[tuple[str, str]]:
+            db = self._db
+            if db is None:
+                try:
+                    from wechatauto.db import WeChatDB  # noqa: PLC0415 —— 惰性导入
+                    db = WeChatDB()
+                    self._db = db  # 缓存供后续查询（username_by_name 等）复用
+                except Exception as exc:  # noqa: BLE001 —— 微信未运行/无法读库
+                    logger.warning("[wechat] 初始化 WeChatDB 失败，无法读取会话列表: %s", exc)
+                    return []
+            out: list[tuple[str, str]] = []
+            try:
+                sessions = db.get_sessions(limit=200)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[wechat] 读取会话列表失败: %s", exc)
+                return out
+            for s in sessions:
+                username = str(s.get("username") or "").strip()
+                if not username:
+                    continue
+                try:
+                    name = str(db.get_nickname(username) or "").strip()
+                except Exception:  # noqa: BLE001
+                    name = ""
+                # get_nickname 未命中时原样返回 username：此时仍回退 username，避免展示假名称
+                out.append((name if name and name != username else username, username))
+            return out
+
+        return await asyncio.to_thread(_load)
+
+    def username_by_name(self, name: str) -> str | None:
+        """把显示名（备注/昵称）反解为 username；解析不出返回 None。
+
+        供白名单匹配使用：弹窗保存的是显示名，而消息 meta 里只有 username。
+        打开过一次联系人弹窗后 _db 已被 list_contacts 惰性缓存，此处即可用。
+        """
+        if self._db is None or not (name or "").strip():
+            return None
+        try:
+            return self._db.username_by_nickname(name.strip())
+        except Exception:  # noqa: BLE001
+            return None
+
     def _make_callback(self, chat_name: str, username: str) -> Callable:
         def on_msg(msg: dict, _lst: Any) -> None:
             if _is_echo(msg, username, self._self_wxid, self._recent_sent):
@@ -234,7 +290,7 @@ class WeChatReplicaConnector(BaseConnector):
             return bool(is_success)
         return getattr(resp, "ok", None) is not False
 
-    async def send_reply(self, message: ChatMessage) -> None:
+    async def send_reply(self, message: ChatMessage) -> bool:
         if self._gui is None:
             from wechatauto.guia import WeChatGUI  # noqa: PLC0415 —— GUI 发送路径懒初始化
             self._gui = WeChatGUI()
@@ -249,7 +305,7 @@ class WeChatReplicaConnector(BaseConnector):
                     self._recent_sent.append((text.strip(), time.monotonic()))
                     logger.info("[wechat] 已引用回复 -> chat=%s quote=%r: %s",
                                 message.chat_id, quote_text[:20], text[:50])
-                    return
+                    return True
                 logger.warning("[wechat] 引用回复失败，回退直发: %s", getattr(resp, "message", resp))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[wechat] 引用回复异常，回退直发: %s", exc)
@@ -257,11 +313,13 @@ class WeChatReplicaConnector(BaseConnector):
             resp = self._gui.send_msg(text, who=message.chat_id)
             if self._resp_ok(resp) is False:
                 logger.warning("[wechat] 发送返回失败: %s", getattr(resp, "message", resp))
-                return
+                return False
             self._recent_sent.append((text.strip(), time.monotonic()))  # 回声比对记录
             logger.info("[wechat] 已发送回复 -> chat=%s: %s", message.chat_id, text[:50])
+            return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[wechat] 发送失败: %s", exc)
+            logger.warning("[wechat] 发送结果不确定: %s", exc)
+            raise
 
     async def on_stop(self) -> None:
         if self._listener is not None:
@@ -330,13 +388,14 @@ class WeChatConnector(BaseConnector):
                 )
         return out
 
-    async def send_reply(self, message: ChatMessage) -> None:
+    async def send_reply(self, message: ChatMessage) -> bool:
         if self._wx is None:
             logger.warning("[wechat] 连接器未启动，回复仅记录不发送")
-            return
+            return False
         ctrl = self._listened.get(message.chat_id)
         if ctrl is not None:
             ctrl.SendMsg(message.content)
         else:
             self._wx.SendMsg(msg=message.content, who=message.chat_id)
         logger.info("[wechat] 已发送回复 -> chat=%s", message.chat_id)
+        return True

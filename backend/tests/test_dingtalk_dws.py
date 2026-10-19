@@ -85,7 +85,10 @@ def test_parse_real_dws_event():
     assert msg.chat_id == "cidPlSRhLXedzevWuzFCfVs2w=="
     assert msg.sender == "赵丽阳"
     assert msg.content == "ChatAgent字段采样"  # @我 前缀已剥离
+    assert msg.is_group is True
+    assert msg.at_me is True
     assert msg.meta["dws"]["message_id"] == "msg+0Ww1T8iPgNN5wfQr2Tkrg=="
+    assert _parse_event_line(line).id == msg.id  # 外部消息重放时稳定去重
     assert msg.ts == 1792121116051
 
 

@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 from ..models import ChatMessage
+
+if TYPE_CHECKING:
+    from ..rag import KnowledgeBase
 
 
 @dataclass
@@ -43,8 +46,10 @@ class ReplyGenerator(ABC):
     name: str = "base"
 
     @abstractmethod
-    async def generate(self, message: ChatMessage, history: Sequence[ChatMessage]) -> GenerationResult:
-        """根据新消息与聊天上下文生成回复。"""
+    async def generate(
+        self, message: ChatMessage, history: Sequence[ChatMessage], kb: "KnowledgeBase | None" = None
+    ) -> GenerationResult:
+        """根据新消息与聊天上下文生成回复；kb 可选，覆盖构造时传入的默认知识库。"""
 
     async def aclose(self) -> None:  # pragma: no cover
         """释放底层资源（如 HTTP 连接），默认无需处理。"""

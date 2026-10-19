@@ -43,7 +43,10 @@ DIRECTION_OUT = "out"  # 助手生成的回复
 # ---- 回复状态 ----
 STATUS_RECEIVED = "received"  # 收到的消息
 STATUS_PENDING = "pending"  # 回复待人工确认
-STATUS_SENT = "sent"  # 已发送
+STATUS_SENT = "sent"  # 连接器确认发送成功
+STATUS_SENDING = "sending"  # 正在调用连接器
+STATUS_FAILED = "failed"  # 连接器明确拒绝/失败，可重试
+STATUS_UNKNOWN = "unknown"  # 超时或结果不确定，需核对平台后重试
 STATUS_REJECTED = "rejected"  # 人工驳回
 STATUS_BLOCKED = "blocked"  # JEV 质量门禁拦截，默认禁止发送
 STATUS_IGNORED = "ignored"  # 按策略忽略（非文本/群聊未@等），不生成草稿
@@ -73,6 +76,9 @@ class SimulateRequest(BaseModel):
     chat_id: str = "default"
     sender: str = "对方"
     content: str
+    msg_type: str = "text"
+    is_group: Optional[bool] = None
+    at_me: Optional[bool] = None
 
 
 class DirectChatRequest(BaseModel):
@@ -80,12 +86,14 @@ class DirectChatRequest(BaseModel):
 
     content: str
     chat_id: str = "web-demo"
+    platform: Optional[str] = None  # web | wechat | dingtalk；we默认 web（用全局知识库）
 
 
 class ApproveRequest(BaseModel):
     """人工确认发送：可携带编辑后的草稿内容（填入输入框后人工修改再发送）。"""
 
     content: Optional[str] = None
+    confirm_unknown: bool = False  # 核对平台后明确允许重试结果不确定的投递
 
 
 class CandidateSelectRequest(BaseModel):
@@ -103,7 +111,17 @@ class ContactsRequest(BaseModel):
 class ConfigUpdateRequest(BaseModel):
     """配置热更新（部分更新；persist=True 时同步写回配置文件）。"""
 
-    engine: Optional[str] = None  # mock | llm
+    engine: Optional[str] = None  # mock | llm | acp
+    acp_mode: Optional[str] = None  # acp | pi
+    acp_command: Optional[str] = None
+    acp_args: Optional[str] = None
+    acp_cwd: Optional[str] = None
+    acp_env_name: Optional[str] = None
+    acp_env_key: Optional[str] = None
+    acp_timeout: Optional[float] = None
+    llm_base_url: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_api_key: Optional[str] = None
     jev_enabled: Optional[bool] = None
     jev_provider: Optional[str] = None  # mock | typesafe
     jev_api_key: Optional[str] = None
@@ -117,8 +135,12 @@ class ConfigUpdateRequest(BaseModel):
     llm_rate_limit_per_chat: Optional[int] = None
     alert_channel: Optional[str] = None  # off | wechat-filehelper | dingtalk-self
     alert_dingtalk_chat_id: Optional[str] = None
-    allowed_contacts: Optional[list[str]] = None
-    knowledge_dir: Optional[str] = None  # RAG 知识库目录（空字符串 = 停用）
+    allowed_contacts: Optional[list[str]] = None  # 全局默认白名单（各平台可单独覆盖）
+    wechat_allowed_contacts: Optional[list[str]] = None  # 微信独立白名单
+    dingtalk_allowed_contacts: Optional[list[str]] = None  # 钉钉独立白名单
+    knowledge_dir: Optional[str] = None  # 全局默认知识库目录（空字符串 = 停用）
+    wechat_knowledge_dir: Optional[str] = None  # 微信独立知识库目录（空 = 用全局）
+    dingtalk_knowledge_dir: Optional[str] = None  # 钉钉独立知识库目录（空 = 用全局）
     embedding_enabled: Optional[bool] = None  # RAG 语义检索开关（需已配置 embedding.model）
     auto_send: Optional[bool] = None  # 自动发送开关（默认人工确认）
     persist: bool = False

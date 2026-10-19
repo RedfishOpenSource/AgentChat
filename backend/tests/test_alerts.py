@@ -87,7 +87,7 @@ async def test_llm_failure_streak_triggers_alert_and_success_resolves():
             super().__init__()
             self.fail = True
 
-        async def generate(self, message, history):
+        async def generate(self, message, history, kb=None):
             if self.fail:
                 raise RuntimeError("llm down")
             return await super().generate(message, history)

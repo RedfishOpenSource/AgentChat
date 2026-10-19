@@ -5,12 +5,15 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - chatagent-data:/app/backend        # SQLite 数据库与日志持久化
+      - chatagent-data:/app/backend/data   # SQLite 与知识库向量缓存
+      - chatagent-logs:/app/backend/logs   # 日志持久化
     environment:
       CHATAGENT_ENGINE: ${CHATAGENT_ENGINE:-mock}
       CHATAGENT_LLM_API_KEY: ${CHATAGENT_LLM_API_KEY:-}
       CHATAGENT_ALLOWED_IPS: ${CHATAGENT_ALLOWED_IPS:-*}
       CHATAGENT_ALLOWED_CONTACTS: ${CHATAGENT_ALLOWED_CONTACTS:-}
+      CHATAGENT_DB_PATH: /app/backend/data/chatagent.db
+      CHATAGENT_CONFIG_FILE: /app/backend/data/config.yaml
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')\""]
@@ -20,3 +23,4 @@ services:
 
 volumes:
   chatagent-data:
+  chatagent-logs:

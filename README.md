@@ -1,7 +1,7 @@
 # ChatAgent — 微信/钉钉智能聊天机器人
 
 参考 [jev-chat-windows-deepseek-jev](https://github.com/Aimark-dai/jev-chat-windows-deepseek-jev) 的核心流程实现的智能聊天机器人：
-**监听新消息 → 连发合并（静默 3 秒） → （可选）JEV 结构化预判 → 生成回复草稿 → （可选）JEV 复审排序 → 人工编辑确认后发送（永不自动发送）**。
+**监听新消息 → 连发合并（静默 3 秒） → （可选）JEV 结构化预判 → 生成回复草稿 → （可选）JEV 复审排序 → 默认人工编辑确认后发送；可显式开启普通回复自动发送**。
 
 - **后端**：Python 3.11+ / FastAPI / WebSocket
 - **前端**：Vue 3 + Vite
@@ -73,8 +73,10 @@ cd frontend && npm run build   # 产物在 frontend/dist，后端自动探测并
 ### Windows 一键启停（推荐）
 
 ```bat
-start.bat   # 启动（首次自动 uv sync；崩溃后 5 秒自动重启；日志写入 backend/logs/）
-stop.bat    # 停止
+restart.bat   # 服务管理菜单（推荐日常使用）：1 停止服务 / 2 重新编译并启动
+start.bat     # 启动（首次自动 uv sync；崩溃后 5 秒自动重启；日志写入 backend/logs/）
+stop.bat      # 仅停止端口监听进程；若服务由 start.bat 守护启动，请用 restart.bat 停止，
+              # 否则守护循环会在 5 秒后把服务重新拉起
 ```
 
 ### Docker
@@ -158,7 +160,27 @@ dingtalk:
   reply_command: "你的发送命令 --chat {chat_id} --text {content}"
 ```
 
-### 启用 LLM（DeepSeek）
+### 接入外部 Agent（ACP，可插拔）
+
+设置页「AI 接入」选 **Agent**，内置预设：**pi / Claude Code / Codex / Hermes / 自定义**。
+每个被监听的联系人保持一个独立 Agent 会话，多轮问答共享上下文；知识、工具等能力全部由 Agent 自带。
+
+| Agent | 接入方式 | 说明 |
+| --- | --- | --- |
+| pi | ChatAgent 内置适配（`pi --mode rpc`） | 每联系人独立子进程，`--session-id` 绑定会话，重启不丢上下文 |
+| Claude Code | 原生 ACP（`claude-code-acp`，需 `npm i -g @zed-industries/claude-code-acp`） | claude CLI 已登录可不填 Key |
+| Codex | 原生 ACP（`codex-acp`，需 `npm i -g @agentclientprotocol/codex-acp`） | 使用 codex CLI 已有登录态 |
+| Hermes / 自定义 | 任意 ACP 命令 | 填启动命令、参数、鉴权环境变量即可 |
+
+配置项：启动命令、参数、**工作空间（cwd）**、鉴权环境变量名与 Key、超时。
+⚠️ Agent 具备工具执行（含 shell）能力，工作空间请指向专用目录；切换接入方式会重建引擎（会话重开）。
+
+### 启用 LLM（OpenAI 兼容接口）
+
+前端「设置」可直接填写 **OpenAI API Base URL、模型名称和 API Key**，不需要选择供应商。
+URL 使用服务商提供的基础地址（例如包含 `/v1`），程序追加 `/chat/completions`。
+保存立即生效并写入本机 `backend/config.yaml`（已被 Git 忽略）；Key 保存后在面板可见（眼睛图标切换明文/圆点，刷新不丢失），其余密钥字段在接口中仍脱敏。
+不要把真实 Key 写入配置示例或代码。此文件是本地明文配置，应限制本机访问，也不要强制添加到 Git。
 
 ```bash
 # 方式一：环境变量
@@ -320,7 +342,7 @@ llm:
 ## 测试结果
 
 ```
-backend 单元/接口测试:  157 passed（含连接器、持久化、白名单、连发合并、场景策略、LLM 韧性、告警、热更新、静态托管、微信群聊引用+@回复、RAG 语义检索、图片理解）
+backend 单元/接口测试:  175 passed（含连接器、持久化、白名单、连发合并、场景策略、LLM 韧性、告警、热更新、静态托管、微信群聊引用+@回复、RAG 语义检索、图片理解、连接器级白名单/知识库隔离）
 端到端模拟 simulate.py: 16 passed, 0 failed
 钉钉真机验证:           真实群@消息 → 事件触发 → 生成回复 → 批准 → 引用回复送达 ✅
 前端 vite build:        OK
@@ -336,6 +358,10 @@ backend 单元/接口测试:  157 passed（含连接器、持久化、白名单�
   现有「引用原消息 + 文本 @」已保证回复可定位到触发者，稳定性优先。
 - **语音/视频等内容识别 —— 暂不支持**：语音需 silk 解码+ASR 链路、视频需抽帧，
   收益低于复杂度；现有占位草稿确保消息不静默丢失，由人工接管。图片已通过可选视觉模型覆盖。
+
+## 投递状态
+
+审核或自动发送会记录 `sending`、`sent`、`failed` 或 `unknown` 状态。`unknown` 表示客户端无法确认平台是否收到消息，界面要求先核对会话再显式确认重试，避免无提示重复发送；服务重启时遗留的 `sending` 状态会恢复为 `unknown`。
 
 ## 声明
 

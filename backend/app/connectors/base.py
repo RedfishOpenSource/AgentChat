@@ -77,11 +77,16 @@ class BaseConnector(ABC):
             while not self._stop_event.is_set():
                 try:
                     msgs = await self.poll()
+                    if self.status == "error":
+                        self.status = "running"
+                        self.last_error = ""
                     if msgs:
                         await self._on_messages(msgs)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
+                    self.status = "error"
+                    self.last_error = str(exc)
                     logger.exception("[%s] poll 异常: %s", self.platform.value, exc)
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(
@@ -104,5 +109,5 @@ class BaseConnector(ABC):
         """拉取一批新消息；无新消息返回空列表。"""
 
     @abstractmethod
-    async def send_reply(self, message: ChatMessage) -> None:
-        """把回复发送到对应平台。"""
+    async def send_reply(self, message: ChatMessage) -> bool:
+        """发送成功返回 True；确定失败返回 False；无法判断时抛出异常。"""

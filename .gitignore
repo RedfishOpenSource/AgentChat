@@ -14,6 +14,7 @@ htmlcov/
 *.sqlite
 *.sqlite3
 rag_embeddings.json
+rag_embeddings.*.json
 rag_embeddings.tmp
 
 # ============ 日志 ============
@@ -25,6 +26,9 @@ nohup.out
 config.yaml
 config.*.yaml
 !config.example.yaml
+# Atomic-write temporary files and editor backups may also contain API keys.
+config.yaml.*
+config.*.yaml.*
 .env
 .env.*
 *.pem
