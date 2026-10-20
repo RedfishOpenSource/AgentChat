@@ -44,7 +44,9 @@ async function resetCurrentSession() {
   if (!window.confirm(`清空「${chatId}」的 AI 会话？\n下一条消息或补充提问将开启新会话，聊天记录仍保留。`)) return
   resetting[key] = true
   try {
-    await api.resetSession(platform, chatId)
+    const result = await api.resetSession(platform, chatId)
+    if (!result.reset) throw new Error('服务未确认会话已重置，请重试')
+    scrollToBottom()
     emit('toast', `「${chatId}」的会话已清空，下一条消息将开启新会话`)
   } catch (e) { emit('toast', `清空失败：${e.message}`) }
   finally { delete resetting[key] }
@@ -228,7 +230,8 @@ function shortChat(id) {
         class="bubble-row"
         :class="m.direction === 'in' ? 'left' : 'right'"
       >
-        <div class="bubble" :class="m.direction">
+        <div v-if="m.meta?.session_reset" class="session-divider">{{ m.content }} · {{ fmt(m.ts) }}</div>
+        <div v-else class="bubble" :class="m.direction">
           <div class="meta-line">
             <span class="platform-mark" :class="m.platform"></span>
             <span class="sender">{{ m.sender || (m.direction === 'in' ? '对方' : 'ChatAgent') }}</span>
@@ -271,7 +274,7 @@ function shortChat(id) {
           <div v-if="m.meta?.error" class="blocked-reason">{{ m.meta.error }}</div>
 
           <!-- 收到的消息：补充说明后重新生成回复 -->
-          <div v-if="m.direction === 'in'" class="supp">
+          <div v-if="m.direction === 'in' && !m.meta?.session_reset" class="supp">
             <button class="chip-btn" @click="toggleSupp(m.id)">✎ 补充并重新生成</button>
             <div v-if="suppOpenId === m.id" class="supp-box">
               <textarea v-model="suppText" rows="2" placeholder="补充背景 / 约束后重新生成回复…" />
@@ -382,6 +385,7 @@ function shortChat(id) {
 .empty p:first-child { color: #d2e0e4; font-size: 14px; font-weight: 600; }
 .empty .hint { margin-top: 6px; color: var(--text-muted); font-size: 11px; }
 .bubble-row { display: flex; width: 100%; }
+.session-divider { margin: 4px auto; padding: 6px 12px; border: 1px dashed var(--border); border-radius: 5px; color: var(--text-dim); font-size: 11px; }
 .bubble-row.left { justify-content: flex-start; }
 .bubble-row.right { justify-content: flex-end; }
 .bubble {

@@ -24,6 +24,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 from ..config import ACPSettings
@@ -95,7 +96,7 @@ class ACPAgentGenerator(ReplyGenerator):
         self._notify_progress = None
         self._notify_session: str | None = None
         self._sessions: dict[tuple[str, str], str] = {}
-        self._pi_resets: dict[tuple[str, str], int] = {}
+        self._pi_resets: dict[tuple[str, str], str] = {}
         self._next_id = 0
 
     # ---------- 公共 ----------
@@ -103,7 +104,14 @@ class ACPAgentGenerator(ReplyGenerator):
         """清空指定联系人的 Agent 会话：下条消息将开启全新会话。"""
         key = (platform, chat_id)
         self._sessions.pop(key, None)
-        self._pi_resets[key] = self._pi_resets.get(key, 0) + 1
+        self._pi_resets[key] = uuid.uuid4().hex
+
+    def set_session_token(self, platform: str, chat_id: str, token: str) -> None:
+        """服务重启/引擎重建后恢复清空分界，避免续接清空前的会话。"""
+        key = (platform, chat_id)
+        if self._pi_resets.get(key) != token:
+            self._sessions.pop(key, None)
+            self._pi_resets[key] = token
 
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()

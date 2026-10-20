@@ -4,7 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ChatAgent 使用说明与案例</title>
 <style>
-:root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;color:#dce6e9;background:#0d1217}*{box-sizing:border-box}body{margin:0;line-height:1.8}header{border-bottom:1px solid #293840;background:#141d24;padding:20px max(24px,calc((100vw - 1120px)/2));display:flex;align-items:center;gap:24px}header strong{font-size:20px}a{color:#78d0df}header a{margin-left:auto;white-space:nowrap}main{max-width:1120px;margin:auto;display:grid;grid-template-columns:190px minmax(0,1fr);gap:35px;padding:32px 24px 80px}nav{position:sticky;top:24px;align-self:start;display:flex;flex-direction:column;gap:10px;font-size:14px}article{min-width:0}h1{margin-top:0;font-size:28px}h2{margin-top:42px;border-bottom:1px solid #293840;padding-bottom:10px;font-size:22px;scroll-margin-top:20px}h3{font-size:17px;color:#9edce5}p,li{font-size:14px}.note{padding:12px 16px;border-left:3px solid #55b8c8;background:#14242b;border-radius:5px}pre{white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #293840;background:#10181e;padding:16px;border-radius:7px;font-size:13px;line-height:1.75}code{font-family:Consolas,monospace}button{padding:6px 14px;cursor:pointer;color:#dce6e9;border:1px solid #38636d;border-radius:5px;background:#234a54}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid #293840;padding:9px;text-align:left}section{margin-bottom:26px}.muted{color:#95a9b2;font-size:13px}@media(max-width:700px){main{display:block;padding:20px 16px}nav{position:static;flex-direction:row;flex-wrap:wrap;margin-bottom:24px}header{padding:16px}header strong{font-size:16px}h1{font-size:24px}}
+:root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;color:#dce6e9;background:#0d1217}*{box-sizing:border-box}body{margin:0;line-height:1.8}header{border-bottom:1px solid #293840;background:#141d24;padding:20px max(24px,calc((100vw - 1120px)/2));display:flex;align-items:center;gap:24px}header strong{font-size:20px}a{color:#78d0df}header a{margin-left:auto;white-space:nowrap}main{max-width:1120px;margin:auto;display:grid;grid-template-columns:190px minmax(0,1fr);gap:35px;padding:32px 24px 80px}nav{position:sticky;top:24px;align-self:start;display:flex;flex-direction:column;gap:10px;font-size:14px}article{min-width:0}h1{margin-top:0;font-size:28px}h2{margin-top:42px;border-bottom:1px solid #293840;padding-bottom:10px;font-size:22px;scroll-margin-top:20px}h3{font-size:17px;color:#9edce5}p,li{font-size:14px}.note{padding:12px 16px;border-left:3px solid #55b8c8;background:#14242b;border-radius:5px}pre{white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #293840;background:#10181e;padding:16px;border-radius:7px;font-size:13px;line-height:1.75}code{font-family:Consolas,monospace}button{padding:6px 14px;cursor:pointer;color:#dce6e9;border:1px solid #38636d;border-radius:5px;background:#234a54}table{border-collapse:collapse;width:100%;font-size:13px;table-layout:fixed}td,th{border:1px solid #293840;padding:9px;text-align:left;overflow-wrap:anywhere}td:first-child,th:first-child{width:24%}p,li{overflow-wrap:anywhere}section{margin-bottom:26px}.muted{color:#95a9b2;font-size:13px}@media(max-width:700px){main{display:block;padding:20px 16px}nav{position:static;flex-direction:row;flex-wrap:wrap;margin-bottom:24px}header{padding:16px}header strong{font-size:16px}h1{font-size:24px}}
 </style>
 </head>
 <body>
@@ -15,25 +15,50 @@
 <p class="muted">本文档与案例直接保存在项目 frontend/public/guide.html，随前端构建发布；阅读、复制案例不写入 SQLite，也不会自动创建 Agent。</p>
 <section id="quickstart"><h2>快速开始</h2><ol><li>在 Agent Studio 点击「创建 Agent」，填写名称与描述，在「设置」中选择已存在的专用工作空间。</li><li>选择底层引擎 PI、Claude Code、Codex 或 Hermes；在运行服务的电脑上安装对应适配器，并完成模型授权。</li><li>按需设置 Skills、知识库、MCP 和超时。Skills 可从 Git URL 或本地目录安装。</li><li>保存后等待「角色改写中」结束。成功后重新编辑可以看到优化后的角色描述。</li><li>先点击 Agent 的「调试」，确认行为符合预期。再在微信或钉钉「监听联系人」中选定联系人、绑定 Agent 并启用监听。</li><li>消息生成的回复默认是待审核草稿，核对内容与目标会话后点击「确认发送」。自动发送开关只应在明确需要时开启。</li></ol></section>
 <section id="role"><h2>角色改写与 role.md</h2><p>每次新建或保存 Agent 都重新调用配置的 LLM 改写角色，即使描述不变、只修改了设置，也会再次执行。优化后的文本同步保存为 Agent 的描述与运行指令，并写入：</p><pre><code>&lt;工作空间&gt;/.agents/memory/role.md</code></pre><p>只有 AI 成功返回新提示词且角色文件成功写入，才显示改写完成。失败会显示「改写失败」及原因，不会把原文当作成功结果；已有角色文件保留，修复后重新保存即可重试。处理期间和失败状态下应先完成改写再调试或接收自动生成任务。模板同步不会覆盖该角色文件。</p><p>改写使用服务配置中的 <code>llm.base_url / llm.model / llm.api_key</code>；需要密钥的服务应填写有效密钥。本机无密钥的兼容服务可以留空。底层 Agent CLI 的登录凭据与角色改写服务的凭据是两套配置。</p></section>
-<section id="conversation"><h2>消息与会话</h2><ul><li>联系人行仅显示名称、编辑、删除；点击编辑配置 Agent、群聊触发、连发合并、非文本处理与超时。</li><li>消息页选择联系人后，底部输入框支持向当前对话的 AI 补充背景或继续提问；Enter 发送，Shift + Enter 换行。补充只产生待审核草稿。</li><li>消息右上角「清空会话」重置当前联系人的 Agent 上下文，本地记录保留；下一条来信或补充消息开启新会话。处理期间请等待任务结束再清空。</li><li>消息气泡显示合并、排队、连接 Agent、思考、工具执行、生成回复及耗时；可展开查看进度和回复预览。</li><li>启动横幅中的 Context、Skills、Extensions 及适配器重试通知会过滤，平台正文应保留必要答复。</li></ul></section>
+<section id="conversation"><h2>消息与会话</h2><ul><li>联系人行仅显示名称、编辑、删除；点击编辑配置 Agent、群聊触发、连发合并、非文本处理与超时。</li><li>消息页选择联系人后，底部输入框支持向当前对话的 AI 补充背景或继续提问；Enter 发送，Shift + Enter 换行。补充只产生待审核草稿。</li><li>消息右上角「清空会话」重置当前联系人的 Agent 上下文，本地记录保留；页面会出现「会话已清空」分隔记录，下一条来信或补充消息开启新会话，AI 不再带入分界之前的聊天历史。清空分界跨服务重启保留。处理期间请等待任务结束再清空。工作空间的角色、Skills、知识库和长期记忆文件继续保留；如需清除长期记忆，应单独管理相应文件。</li><li>消息气泡显示合并、排队、连接 Agent、思考、工具执行、生成回复及耗时；可展开查看进度和回复预览。</li><li>启动横幅中的 Context、Skills、Extensions 及适配器重试通知会过滤，平台正文应保留必要答复。</li></ul></section>
 <section id="debug"><h2>Agent 独立调试</h2><p>从 Agent Studio 点击「调试」，可直接与已创建 Agent 多轮对话。它使用已保存的角色、工作空间、Skills 和配置，与微信、钉钉联系人的会话隔离。「新建会话」用于从空上下文开始测试。窗口展示执行状态与记录；调试答复不提供平台发送操作。Agent 工具仍可访问其工作空间，调试时请明确要分析的项目与分支。</p></section>
 <section id="support"><h2>案例 1：Agent 客服</h2><p>适用于经常被同事找来排查线上问题的项目开发人员。Agent 分析前后端代码，通过 AgentR 查询数据库、Redis 和 MQ，给出有依据的原因与解决方案。</p>
-<table><tr><th>配置项</th><th>建议值</th></tr><tr><td>名称</td><td>Agent客服</td></tr><tr><td>工作空间</td><td>独立目录，如 D:/develop/project/AgentChat</td></tr><tr><td>后端项目地址</td><td>当前电脑的后端项目目录。本项目示例：D:/develop/GitNote/RedfishOpenSource/ChatAgent/backend</td></tr><tr><td>前端项目地址</td><td>当前电脑的前端项目目录。本项目示例：D:/develop/GitNote/RedfishOpenSource/ChatAgent/frontend</td></tr><tr><td>能力</td><td>文件读写、执行命令、网页抓取；按需要安装 Skills</td></tr><tr><td>MCP</td><td>使用下方 AgentR 的数据与中间件 MCP 配置</td></tr></table>
+<table><tr><th>配置项</th><th>建议值</th></tr><tr><td>名称</td><td>Agent客服</td></tr><tr><td>工作空间</td><td>独立目录，如 D:/develop/project/AgentChat</td></tr><tr><td>后端项目地址</td><td>D:\develop\project\back\basic-platform-service</td></tr><tr><td>前端项目地址</td><td>D:\develop\project\wukong</td></tr><tr><td>能力</td><td>文件读写、执行命令、网页抓取；按需要安装 Skills</td></tr><tr><td>MCP</td><td>使用下方 AgentR 的数据与中间件 MCP 配置</td></tr></table>
 <p>将下面描述复制到 Agent Studio。项目目录示例可以替换为当前电脑上真正需要分析的后端、前端路径；每次排查先明确两个目标分支。</p><button data-copy="support-prompt">复制描述提示词</button>
-<pre id="support-prompt">你是一个项目开发人员，经常有人找你排查线上问题。你需要分析项目，查询数据库、Redis、MQ 等中间件分析原因，帮助用户排查问题，并给出解决方案。
+<pre id="support-prompt"># 线上问题排查工程师
 
-后端项目地址：D:/develop/GitNote/RedfishOpenSource/ChatAgent/backend（替换为当前电脑的后端项目地址）。
-前端项目地址：D:/develop/GitNote/RedfishOpenSource/ChatAgent/frontend（替换为当前电脑的前端项目地址）。
+## 角色
 
-每次分析先明确问题现象、环境、发生时间、复现步骤，以及前端和后端各自的目标分支；缺少分支时先询问，不擅自使用默认分支。
-每次分析为相关仓库创建临时 Git worktree，将 worktree 放在当前 Agent 工作空间的 worktrees/ 下，并切换到对应目标分支。不要在原有开发目录切换分支或修改未提交代码。
-如果目标分支无法直接切换（例如已被其他 worktree 使用），先 fetch origin，基于目标分支创建唯一的临时分支，然后在临时 worktree 中切换到该分支，拉取合并最新目标分支内容。有冲突时报告冲突，不覆盖用户修改。
-若前后端位于同一个 Git 仓库且分支相同，可共用一个 worktree；若目标分支不同，为前后端分别建立 worktree。项目地址是仓库子目录时先识别 Git 根目录，并保留原目录的相对路径。
+你是一名资深后端开发工程师，专职负责线上问题的排查、定位与解决。你以证据驱动的方式工作，通过分析前后端项目源码、查询数据库、Redis、MQ 等中间件的实际数据与运行状态，还原问题发生过程，输出结构化的排查结论和可执行的解决方案。
 
-MCP 使用 AgentR 的配置，通过已保存连接查询数据库、Redis 和 MQ。先识别正确环境与连接，不编造凭据；优先只读查询。未经明确授权不执行数据更新、删库、删缓存、消费或发布业务消息等会改变线上状态的动作。
-先定位前后端调用链，再结合代码、日志、SQL、缓存和消息证据区分事实与推测。给出根因、证据、修复建议及验证方法。临时 worktree 与分支的路径记录在排查结果中；任务结束确认无未保存成果后再清理。
+## 项目信息
 
-对外回复只保留用户需要的结论、必要依据和解决步骤，默认简洁中文。不附带 Context、Skills、Extensions、启动日志、内部推理或本机无关路径。</pre>
+- 后端项目：D:\develop\project\back\basic-platform-service
+- 前端项目：D:\develop\project\wukong
+
+## 职责
+
+1. **澄清问题**：接收用户问题描述后，主动确认关键信息：报错现象、发生时间、影响范围、复现步骤、相关接口或功能模块。信息不足时，先列出需要用户补充的问题清单，待补充后再继续排查。
+2. **源码分析**：分析前后端项目源码，定位疑似问题的代码位置和完整调用链路。
+3. **数据验证**：按需查询数据库、Redis、MQ 等中间件中的实际数据与运行状态，结合日志验证假设，还原问题发生过程。
+4. **结论输出**：按“问题现象 → 根因分析 → 证据链 → 解决方案 → 验证与回归建议”的结构汇报。
+5. **修复保障**：必要时给出验证方案和回归建议，确保修复有效且不引入新问题。
+
+## 工作流程（每次排查必须遵守）
+
+1. **确定归属与分支**：先判断问题是前端、后端还是前后端均需排查，并确认各自需要分析的目标分支。
+2. **创建临时 worktree**：在当前工作空间下创建临时 worktree 用于分析，并切换到对应的目标分支。
+3. **分支不可用时**：若目标分支无法直接切换，则基于该目标分支创建临时分支并切换，然后拉取并合并最新目标分支内容，确保分析代码与线上一致。
+4. **全程基于临时 worktree 分析**；分析结束后告知用户临时 worktree 的位置，供用户确认或清理。
+
+## 输出风格
+
+- 简洁直接：先给结论，再展开细节，按排查步骤递进式汇报。
+- 证据支撑：每条结论必须附带证据（代码片段、查询结果、日志摘录），不凭猜测下结论。
+- 聚焦业务：只输出结论、证据与必要操作，不说明使用了哪些工具或技能，不透露内部分析过程。
+- 条理清晰：使用结构化格式（标题、编号、代码块）组织内容，便于快速阅读和执行。
+
+## 边界与安全约束
+
+1. **默认只读排查**：以排查和分析为主，不直接修改项目代码；确需修改时，先说明改动方案并征得用户同意，且仅在临时 worktree 中操作。
+2. **保护线上数据**：不执行任何会变更或删除线上数据的危险操作（如 delete、update、清空缓存、向生产 MQ 发送测试消息等）；确需执行时，必须先向用户确认。
+3. **只读优先**：查询数据库时优先使用只读操作（select、get、scan 等）。
+4. **诚实汇报**：无法定位问题时，明确说明已排查范围、已排除的可能性，并给出下一步排查建议；不敷衍、不隐瞒不确定性。</pre>
 <h3>一次排查的提问示例</h3><pre>测试环境订单状态一直是处理中，订单号 TEST-20261020-001。
 后端目标分支：release/test；前端目标分支：release/test-ui。
 请先建立临时 worktree，再检查订单状态接口、Redis 缓存与 MQ 消费情况。
@@ -51,7 +76,7 @@ git -C &lt;工作空间&gt;/worktrees/backend-20261020 merge origin/release/test
     "agentr-go": { "type": "http", "url": "http://127.0.0.1:8319/api/go/mcp" },
     "agentr-python": { "type": "http", "url": "http://127.0.0.1:8319/api/python/mcp" }
   }
-}</pre><p>如果 AgentR 修改了监听端口或部署地址，使用实际配置替换 URL。Go、Python 服务未启动时，其端点不可用。更改配置后重新保存 Agent，并从新会话验证所选适配器是否支持这些 MCP 服务。</p><p>这里复用的是 AgentR 的数据库和中间件服务端点，不是 AgentR 仓库中用于二进制分析的 REA MCP。端点与工具说明参考本机 AgentR 项目的 <code>doc/mcp-service.md</code>，文档不保存真实数据库密码或连接信息。</p></section>
+}</pre><p>如果 AgentR 修改了监听端口或部署地址，使用实际配置替换 URL。Go、Python 服务未启动时，其端点不可用。更改配置后重新保存 Agent，并从新会话验证所选适配器是否支持这些 MCP 服务。目前 pi-acp 只接收 MCP 参数，不会自动将它们开放为 pi 工具；PI 用户还需为 pi 安装并配置支持 HTTP MCP 的扩展，或选择支持这些 MCP 端点的适配器。仅写入 JSON 不代表工具已可调用。</p><p>这里复用的是 AgentR 的数据库和中间件服务端点，不是 AgentR 仓库中用于二进制分析的 REA MCP。端点与工具说明参考本机 AgentR 项目的 <code>doc/mcp-service.md</code>，文档不保存真实数据库密码或连接信息。</p></section>
 <section id="faq"><h2>常见问题</h2><h3>保存后为什么还在处理中？</h3><p>角色改写需要调用模型。等待列表状态结束；失败时打开编辑查看原因，检查改写用 LLM 配置后重新保存。重新保存即再次触发，不需要刻意修改描述。</p><h3>命令未检测到怎么办？</h3><p>确认运行服务的账户已安装对应 ACP 适配器且 PATH 可见。安装或调整环境后重启服务。</p><h3>为什么没自动回复？</h3><p>确认启用了渠道监听、选中了联系人并绑定有效 Agent，同时检查群聊触发策略。生成后的草稿默认仍需人工确认发送。</p><h3>说明文档在哪里维护？</h3><p>直接编辑 <code>frontend/public/guide.html</code>，运行 <code>cd frontend &amp;&amp; npm run build</code> 后随服务发布，无需数据库迁移。项目 README 提供同一入口。</p></section>
 </article></main>
 <script>

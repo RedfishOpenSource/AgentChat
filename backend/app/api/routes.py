@@ -296,7 +296,9 @@ async def reset_agent_session(request: Request, body: SessionResetRequest):
     if agent.contact_processing(platform, chat_id):
         raise HTTPException(status_code=409, detail="该对话正在处理中，请等待完成后再清空会话")
     cleared = agent.reset_contact_session(platform, chat_id)
-    return {"platform": body.platform, "chat_id": body.chat_id, "reset": cleared}
+    boundary = agent.session_resets[(platform.value, chat_id)]
+    return {"platform": platform.value, "chat_id": chat_id, "reset": cleared,
+            "session_token": boundary["token"], "reset_at": boundary["reset_at"]}
 
 
 @router.post("/agent-profiles/{agent_id}/chat")

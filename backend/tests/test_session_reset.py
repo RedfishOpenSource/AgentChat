@@ -1,13 +1,10 @@
 """清空联系人会话：ACP 丢弃 sessionId、pi 模式更换 session-id、REST 入口校验。"""
 from __future__ import annotations
 
-import json
 import sys
 
-import pytest
 from fastapi.testclient import TestClient
 
-from app.engine.acp import ACPAgentGenerator
 from app.main import create_app
 from tests.conftest import make_settings
 
@@ -65,10 +62,6 @@ def _configure(client, tmp_path, script, mode):
     assert r.status_code == 200, r.text
 
 
-def _chat(client, chat_id, content="hi"):
-    return client.post("/api/chat", json={"content": content, "chat_id": chat_id}).json()["reply"]["content"]
-
-
 def _simulate(client, chat_id, content="hi"):
     r = client.post("/api/simulate", json={"platform": "wechat", "chat_id": chat_id,
                                            "content": content})
@@ -103,6 +96,7 @@ def test_reset_endpoint_validation(tmp_path):
                            json={"platform": "web", "chat_id": "x"}).status_code == 400
         assert client.post("/api/agent-sessions/reset",
                            json={"platform": "wechat", "chat_id": " "}).status_code == 400
-        # Mock/LLM 引擎无会话概念 → reset=False 但不报错
+        # Mock/LLM 也必须清空本地历史上下文，成功返回 reset=True
         r = client.post("/api/agent-sessions/reset", json={"platform": "wechat", "chat_id": "any"})
-        assert r.status_code == 200 and r.json()["reset"] is False
+        assert r.status_code == 200 and r.json()["reset"] is True
+        assert r.json()["session_token"] and r.json()["reset_at"]

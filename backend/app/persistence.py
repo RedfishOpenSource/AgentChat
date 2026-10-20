@@ -62,6 +62,14 @@ CREATE TABLE IF NOT EXISTS agent_assignments (
     PRIMARY KEY (platform, chat_id)
 );
 
+CREATE TABLE IF NOT EXISTS session_resets (
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    token TEXT NOT NULL,
+    reset_at INTEGER NOT NULL,
+    PRIMARY KEY (platform, chat_id)
+);
+
 CREATE TABLE IF NOT EXISTS contact_configs (
     platform    TEXT NOT NULL,
     chat_id     TEXT NOT NULL,
@@ -90,6 +98,18 @@ class SqliteStore:
                     self._conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {declaration}")
             self._conn.commit()
         logger.info("[db] SQLite 已就绪: %s", db_path)
+
+    def list_session_resets(self) -> list[dict]:
+        with self._lock:
+            return [dict(row) for row in self._conn.execute('SELECT * FROM session_resets')]
+
+    def save_session_reset(self, platform: str, chat_id: str, token: str, reset_at: int) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                'INSERT INTO session_resets(platform,chat_id,token,reset_at) VALUES(?,?,?,?) '
+                'ON CONFLICT(platform,chat_id) DO UPDATE SET token=excluded.token, reset_at=excluded.reset_at',
+                (platform, chat_id, token, reset_at),
+            )
 
     # ---------- persistent settings ----------
     def get_settings(self) -> dict[str, Any]:

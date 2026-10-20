@@ -144,8 +144,6 @@ async def test_template_sync_never_overwrites_agent_role(tmp_path):
             ])
         return httpx.Response(200, content=b'template')
     # 本用例直接取真实函数，其他测试仅 mock 网络同步入口。
-    from importlib import reload
-    # 不 reload 模块以免影响并行任务；测试 fixture 将真实函数单独保留。
     result = await REAL_SYNC(str(tmp_path), transport=httpx.MockTransport(handler), prefer_git=False)
     assert result['files'] == ['AGENTS.md']
     assert role.read_text(encoding='utf-8') == '这是已改写的角色'

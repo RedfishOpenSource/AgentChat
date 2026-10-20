@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -16,6 +17,7 @@ from typing import Sequence
 
 from ..agents_registry import find_agent
 from ..config import ACPSettings, Settings
+from ..mcp_config import load_workspace_mcps
 from ..connectors import BaseConnector, build_connectors
 from ..connectors.base import ConnectorStartError
 from ..engine import ACPAgentGenerator, ReplyGenerator, build_engine
@@ -72,6 +74,9 @@ class AgentService:
                 profile.update(pending=False, rewrite_status="failed", rewrite_error="上次角色改写因服务重启中断，请重新保存")
                 if db:
                     db.save_agent_profile(profile)
+        self.session_resets = {
+            (r["platform"], r["chat_id"]): r for r in (db.list_session_resets() if db else [])
+        }
         self.contact_configs: dict[tuple[str, str], dict] = {
             k: v for k, v in (db.list_contact_configs().items() if db else {})
         }
@@ -167,6 +172,7 @@ class AgentService:
             meta={"supplement_to": origin.id, "operator_input": True,
                   **({"dws": origin.meta["dws"]} if origin.meta.get("dws") else {})},
         )
+        self._tag_session(supplement)
         self.store.add(supplement)
         self.bus.publish({"type": "message", "message": supplement.model_dump(mode="json")})
         await self._generate_and_reply(supplement)
@@ -187,6 +193,7 @@ class AgentService:
         incoming = ChatMessage(
             platform=platform, chat_id=chat_id, sender="操作员", content=content, meta=meta,
         )
+        self._tag_session(incoming)
         self.store.add(incoming)
         self.bus.publish({"type": "message", "message": incoming.model_dump(mode="json")})
         await self._generate_and_reply(incoming)
@@ -243,6 +250,7 @@ class AgentService:
         existing = self.store.get(msg.id)
         if existing is not None:  # 重复消息，跳过
             return existing
+        self._tag_session(msg)
         stored = self.store.add(msg)
         self.bus.publish({"type": "message", "message": msg.model_dump(mode="json")})
         logger.info("[agent] 新消息 %s(%s/%s): %s", msg.id, msg.platform.value, msg.sender, msg.content[:40])
@@ -255,14 +263,46 @@ class AgentService:
         return stored
 
     def reset_contact_session(self, platform: Platform, chat_id: str) -> bool:
-        """清空指定联系人在所有引擎实例中的 Agent 会话（下条消息重新开启）。"""
-        cleared = False
+        """持久化新上下文分界，切断所有引擎会话，保留旧记录供审计。"""
+        if self.contact_processing(platform, chat_id):
+            raise ValueError("该对话正在处理中，请等待完成后再清空会话")
+        key = (platform.value, chat_id)
+        token, reset_at = uuid.uuid4().hex, int(time.time() * 1000)
+        if self.db:
+            self.db.save_session_reset(platform.value, chat_id, token, reset_at)
+        self.session_resets[key] = {"platform": platform.value, "chat_id": chat_id,
+                                    "token": token, "reset_at": reset_at}
         for engine in [self.engine, *self.profile_engines.values()]:
             fn = getattr(engine, "reset_session", None)
             if fn is not None:
                 fn(platform.value, chat_id)
-                cleared = True
-        return cleared
+            self._apply_session_token(engine, platform, chat_id)
+        marker = ChatMessage(
+            platform=platform, chat_id=chat_id, sender="系统", content="会话已清空，后续消息使用新的上下文",
+            status=STATUS_IGNORED, msg_type="system",
+            meta={"session_reset": True, "session_token": token, "reset_at": reset_at},
+        )
+        self.store.add(marker)
+        self.bus.publish({"type": "message", "message": marker.model_dump(mode="json")})
+        return True
+
+    def _apply_session_token(self, engine, platform: Platform, chat_id: str) -> None:
+        boundary = self.session_resets.get((platform.value, chat_id))
+        setter = getattr(engine, "set_session_token", None)
+        if boundary and setter:
+            setter(platform.value, chat_id, boundary["token"])
+
+    def _session_history(self, incoming: ChatMessage) -> list[ChatMessage]:
+        boundary = self.session_resets.get(self._key(incoming))
+        return [h for h in self.store.history(incoming.platform, incoming.chat_id,
+                                             limit=self.settings.llm.max_history)
+                if h.id != incoming.id and not h.meta.get("session_reset")
+                and (not boundary or h.meta.get("session_token") == boundary["token"])]
+
+    def _tag_session(self, incoming: ChatMessage) -> None:
+        boundary = self.session_resets.get(self._key(incoming))
+        if boundary:
+            incoming.meta = {**incoming.meta, "session_token": boundary["token"]}
 
     def agent_assignments_list(self) -> list[dict[str, str]]:
         """联系人绑定清单（platform/chat_id/agent_id），供前端展示。"""
@@ -300,7 +340,7 @@ class AgentService:
             skills=list(profile.get("skills") or []),
             capabilities=list(profile.get("capabilities") or []),
             knowledge_dir=str(profile.get("knowledge_dir") or ""),
-            mcp_servers=list(profile.get("mcp_servers") or []),
+            mcp_servers=load_workspace_mcps(str(profile.get("workspace") or ""), list(profile.get("mcp_servers") or [])),
             plan_before_execute=bool(profile.get("plan_before_execute")),
         )
         engine = ACPAgentGenerator(cfg)
@@ -577,13 +617,10 @@ class AgentService:
             agent=profile["name"] if profile else ("默认 Agent" if self.engine.name == "acp" else self.engine.name),
             timeout=cc["timeout"],
         )
-        history = [
-            h for h in self.store.history(incoming.platform, incoming.chat_id,
-                                          limit=self.settings.llm.max_history)
-            if h.id != incoming.id
-        ]
+        history = self._session_history(incoming)
         try:
             engine = self.engine_for_profile(profile) if profile else self.engine
+            self._apply_session_token(engine, incoming.platform, incoming.chat_id)
             async with asyncio.timeout(cc["timeout"]):
                 if isinstance(engine, ACPAgentGenerator):
                     result = await engine.generate(
@@ -707,6 +744,8 @@ class AgentService:
         - 微信群聊（quote-at）：附 wechat_reply 元数据，并把「@触发者 」前缀
           写进草稿正文（前端可见可编辑；切换候选时由 _ensure_group_prefix 补回）
         """
+        if incoming.meta.get("session_token"):
+            reply.meta = {**reply.meta, "session_token": incoming.meta["session_token"]}
         dws_src = (incoming.meta or {}).get("dws")
         if dws_src:
             reply.meta = {**reply.meta, "dws": dws_src}

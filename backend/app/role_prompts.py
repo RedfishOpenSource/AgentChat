@@ -35,7 +35,8 @@ async def rewrite_role(settings, description: str, *, transport=None) -> str:
                     json={"model": llm.model, "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": description},
-                    ], "temperature": 0.4, "max_tokens": 8192},
+                    ], "temperature": 0.4, "max_tokens": 8192,
+                          **({"thinking": {"type": "disabled"}} if llm.model.lower().startswith('glm-') else {})},
                 )
                 resp.raise_for_status()
                 value = resp.json()['choices'][0]['message'].get('content')
