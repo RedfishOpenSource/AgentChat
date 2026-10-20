@@ -114,7 +114,7 @@ class ConnectorSettings:
 @dataclass
 class Settings:
     host: str = "127.0.0.1"
-    port: int = 8000
+    port: int = 8320
     engine: str = "mock"  # mock | llm | acp（acp = 外部 Agent：pi / claude code / codex / hermes）
     # 发送模式：auto_send=False（默认）仅生成草稿，人工确认后发送；True 时自动发送（前端按钮可切）
     auto_send: bool = False

@@ -6,10 +6,10 @@ rem recognized), which makes the script randomly break.
 title ChatAgent
 cd /d %~dp0backend
 
-rem Refuse to double-start: if port 8000 is already listening, exit with a hint.
-netstat -ano | findstr :8000 | findstr LISTENING >nul 2>&1
+rem Refuse to double-start: if port 8320 is already listening, exit with a hint.
+netstat -ano | findstr :8320 | findstr LISTENING >nul 2>&1
 if not errorlevel 1 (
-  echo [ChatAgent] Port 8000 is already in use. The service is probably running at http://127.0.0.1:8000
+  echo [ChatAgent] Port 8320 is already in use. The service is probably running at http://127.0.0.1:8320
   echo [ChatAgent] To restart, please run stop.bat first, then this script again.
   pause
   exit /b 1
@@ -29,14 +29,14 @@ if not exist .venv (
 set PYTHONIOENCODING=utf-8
 echo ================================================
 echo  ChatAgent starting...
-echo    URL :  http://127.0.0.1:8000
+echo    URL :  http://127.0.0.1:8320
 echo    Log :  backend\logs\service.log
 echo    Stop:  close this window, or run stop.bat
 echo  (A silent console is normal. Details go to the log file above.)
 echo ================================================
 :loop
 echo [%date% %time%] ChatAgent start >> logs\service.log
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log >> logs\service.log 2>&1
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8320 --no-access-log >> logs\service.log 2>&1
 echo [%date% %time%] Server exited (code %errorlevel%). Restarting in 5s... see backend\logs\service.log
 echo [%date% %time%] ChatAgent exit (code %errorlevel%), restart in 5s >> logs\service.log
 timeout /t 5 /nobreak > nul

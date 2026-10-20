@@ -47,7 +47,7 @@
 ```bash
 cd backend
 uv sync                                   # 安装依赖（自动管理 Python 虚拟环境）
-uv run uvicorn app.main:app --reload      # 启动，默认 http://127.0.0.1:8000
+uv run uvicorn app.main:app --reload      # 启动，默认 http://127.0.0.1:8320
 ```
 
 无 uv 时：`pip install fastapi "uvicorn[standard]" httpx pydantic pyyaml` 后 `python -m uvicorn app.main:app`。
@@ -61,10 +61,10 @@ uv run uvicorn app.main:app --reload      # 启动，默认 http://127.0.0.1:800
 ```bash
 cd frontend
 npm install
-npm run dev        # http://localhost:5173 （/api 与 /ws 自动代理到后端 8000）
+npm run dev        # http://localhost:5173 （/api 与 /ws 自动代理到后端 8320）
 ```
 
-生产模式（推荐）：前端构建后由后端直接托管，访问 `http://127.0.0.1:8000` 即可：
+生产模式（推荐）：前端构建后由后端直接托管，访问 `http://127.0.0.1:8320` 即可：
 
 ```bash
 cd frontend && npm run build   # 产物在 frontend/dist，后端自动探测并托管
@@ -179,10 +179,9 @@ dingtalk:
 
 ### 启用 LLM（OpenAI 兼容接口）
 
-前端「设置」可直接填写 **OpenAI API Base URL、模型名称和 API Key**，不需要选择供应商。
+前端设置页现在只提供 **Agent（ACP）选择**；LLM / Mock 引擎仍受支持，但需通过 `backend/config.yaml` 或环境变量配置（改完重启服务）。
 URL 使用服务商提供的基础地址（例如包含 `/v1`），程序追加 `/chat/completions`。
-保存立即生效并写入本机 `backend/config.yaml`（已被 Git 忽略）；Key 保存后在面板可见（眼睛图标切换明文/圆点，刷新不丢失），其余密钥字段在接口中仍脱敏。
-不要把真实 Key 写入配置示例或代码。此文件是本地明文配置，应限制本机访问，也不要强制添加到 Git。
+不要把真实 Key 写入配置示例或代码。配置文件是本地明文配置，应限制本机访问，也不要强制添加到 Git。
 
 ```bash
 # 方式一：环境变量

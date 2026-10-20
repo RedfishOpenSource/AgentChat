@@ -30,9 +30,11 @@ let reconnectTimer = null
 let reconnectDelay = 1000
 
 const engineLabel = computed(() => {
-  if (!status.value) return '...'
-  return status.value.engine === 'llm' ? 'LLM（OpenAI 兼容）'
-    : status.value.engine === 'acp' ? 'Agent（ACP）' : 'Mock 规则引擎'
+  const s = status.value
+  if (!s) return '...'
+  if (s.engine === 'acp') return `Agent: ${s.agent_command || 'ACP'}`
+  if (s.engine === 'llm') return 'LLM（OpenAI 兼容）'
+  return 'Mock 规则引擎'
 })
 
 function toast(text) {
@@ -235,7 +237,7 @@ onUnmounted(() => {
         <ContactPanel platform="dingtalk" :contacts="status?.allowed_contacts?.dingtalk || []" @save="onSaveContacts" />
       </details>
       <SettingsPanel :config="config" :saving="savingSettings" @save="onSaveConfig" />
-      <p class="sidebar-note">白名单弹窗选择；AI 接入支持 OpenAI 兼容接口与外部 Agent；默认人工审核，发送前请核对目标会话</p>
+      <p class="sidebar-note">AI 由下拉选择的 Agent（ACP）驱动；默认人工审核，发送前请核对目标会话</p>
     </aside>
 
     <main class="main">

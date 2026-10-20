@@ -52,6 +52,8 @@ async def status(request: Request):
     agent = _agent(request)
     return {
         "engine": agent.engine.name,
+        # engine=acp 时显示当前选中的 Agent 启动命令，供前端芯片展示
+        "agent_command": (getattr(agent.engine, "cfg", None).command or "") if agent.engine.name == "acp" else "",
         "jev": {
             "enabled": bool(agent.jev and agent.jev.enabled),
             "provider": getattr(agent.jev, "provider", None),
