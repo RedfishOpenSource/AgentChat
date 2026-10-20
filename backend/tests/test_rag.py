@@ -183,6 +183,34 @@ def test_api_fs_dirs_invalid_path(rag_client):
     assert client.get("/api/fs/dirs", params={"path": "Z:\\不存在"}).status_code == 400
 
 
+def test_native_directory_picker_runs_only_for_local_windows_client(rag_client, monkeypatch):
+    from types import SimpleNamespace
+    import app.api.routes as routes
+
+    client, _ = rag_client
+    monkeypatch.setattr(routes, "sys", SimpleNamespace(platform="win32"))
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="C:\\workspace\\agent")
+
+    monkeypatch.setattr(routes.subprocess, "run", fake_run)
+    response = client.post("/api/fs/pick-dir", json={"path": "C:\\workspace"})
+    assert response.status_code == 200
+    assert response.json() == {"path": "C:\\workspace\\agent"}
+    assert "-STA" in calls[0][0]
+    assert calls[0][1]["env"]["CHATAGENT_PICKER_INITIAL"] == "C:\\workspace"
+
+
+def test_native_directory_picker_rejects_non_local_client(rag_client):
+    from fastapi.testclient import TestClient
+
+    client, _ = rag_client
+    remote = TestClient(client.app, client=("192.168.1.20", 12345))
+    assert remote.post("/api/fs/pick-dir", json={"path": ""}).status_code == 403
+
+
 def test_knowledge_dir_persisted(rag_client):
     client, tmp_path = rag_client
     cfg_file = tmp_path / "config.yaml"

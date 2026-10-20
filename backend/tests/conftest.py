@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import ConnectorSettings, JEVSettings, LLMSettings, Settings
+from app.config import ConnectorSettings, LLMSettings, Settings
 from app.main import create_app
 
 
@@ -16,7 +16,7 @@ def make_settings(**overrides) -> Settings:
     log_file="",          # 测试不开文件日志（避免多进程句柄）
     config_file="",       # 测试不写配置文件（热更新 persist 测试显式传 tmp 文件）
         llm=LLMSettings(max_history=12),
-        jev=JEVSettings(enabled=False),
+        allowed_contacts=["*"],  # 测试默认放行所有会话；生产默认不监听任何人
         wechat=ConnectorSettings(enabled=True, mode="mock", poll_interval=0.02),
         dingtalk=ConnectorSettings(enabled=True, mode="mock", poll_interval=0.02),
     )

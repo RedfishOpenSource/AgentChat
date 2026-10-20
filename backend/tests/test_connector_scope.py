@@ -70,8 +70,8 @@ async def test_platform_whitelist_api_scoped(client: TestClient):
 
     st = client.get("/api/status").json()
     assert st["allowed_contacts"]["wechat"] == ["张三"]
-    assert st["allowed_contacts"]["dingtalk"] == []  # 钉钉不受影响
-    assert st["allowed_contacts_global"] == []  # 全局不受影响
+    assert st["allowed_contacts"]["dingtalk"] == ["*"]  # 钉钉不受影响，回退全局
+    assert st["allowed_contacts_global"] == ["*"]  # 全局不受影响
 
     # 不带 platform 仍是全局语义（兼容旧客户端）
     client.put("/api/contacts", json={"allowed_contacts": ["李四"]})

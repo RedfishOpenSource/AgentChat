@@ -1,8 +1,8 @@
 """端到端模拟测试（无需真实微信/钉钉/LLM）：
 
-1. 启动完整应用（Mock 连接器 + Mock 引擎 + Mock JEV）
+1. 启动完整应用（Mock 连接器 + Mock 引擎）
 2. 模拟微信/钉钉收到新消息 → 验证自动生成回复
-3. 验证人工审核（批准/驳回）与质量门禁（敏感内容拦截）
+3. 验证人工审核（批准/驳回）
 4. 验证直接对话接口
 
 用法：
@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.config import JEVSettings  # noqa: E402
 from app.main import create_app  # noqa: E402
 from tests.conftest import make_settings  # noqa: E402
 
@@ -42,7 +41,6 @@ def main() -> int:
             pass
 
     settings = make_settings()
-    settings.jev = JEVSettings(enabled=True, provider="mock")  # 开启本地规则版 JEV
     app = create_app(settings)
 
     passed, failed = 0, 0
@@ -71,7 +69,7 @@ def main() -> int:
         st = client.get("/api/status").json()
         check("按钮启动监听后运行中", st["connectors"]["wechat"]["status"] == "running"
               and st["connectors"]["dingtalk"]["status"] == "running")
-        print(f"  引擎: {st['engine']} | JEV: {st['jev']} | 发送模式: {st.get('send_mode')}")
+        print(f"  引擎: {st['engine']} | 发送模式: {st.get('send_mode')}")
 
         # 1. 模拟微信/钉钉新消息 → 自动生成回复
         scenarios = [
@@ -104,22 +102,16 @@ def main() -> int:
         check("驳回回复 → 已驳回", r2.status_code == 200 and r2.json()["message"]["status"] == "rejected")
         p("批", r1.json()["message"])
 
-        # 3. 敏感内容：模拟对方诱导转账（引擎返回敏感回复 → JEV 拦截）
-        print("\n[场景3] 质量门禁：敏感内容被 JEV 拦截")
-        # 直接调用引擎层验证拦截逻辑（mock 引擎本身不产生敏感内容，用 LLM+JEV 组合已在单测覆盖）
-        st2 = client.get("/api/status").json()
-        check("JEV 已启用", st2["jev"]["enabled"] is True)
-
-        # 4. 直接对话（前端“对话测试”走的接口）
-        print("\n[场景4] 直接对话 /api/chat")
+        # 3. 直接对话（原“对话测试”走的接口）
+        print("\n[场景3] 直接对话 /api/chat")
         r = client.post("/api/chat", json={"content": "你好"})
         data = r.json()
         p("问", data["message"])
         p("答", data["reply"])
         check("直接对话返回回复", r.status_code == 200 and data["reply"]["direction"] == "out")
 
-        # 5. 连接器控制
-        print("\n[场景5] 连接器控制")
+        # 4. 连接器控制
+        print("\n[场景4] 连接器控制")
         r = client.post("/api/connectors/wechat/stop")
         check("停止微信连接器", r.json()["connector"]["status"] == "stopped")
         r = client.post("/api/connectors/wechat/start")

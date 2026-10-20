@@ -18,6 +18,6 @@ COPY --from=frontend /app/frontend/dist ./frontend/dist
 WORKDIR /app/backend
 ENV CHATAGENT_HOST=0.0.0.0
 ENV CHATAGENT_ALLOWED_IPS=*
-EXPOSE 8320
+EXPOSE 8318
 VOLUME ["/app/backend/logs"]
-CMD ["uv", "run", "--no-dev", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8320", "--no-access-log"]
+CMD ["uv", "run", "--no-dev", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8318", "--no-access-log"]

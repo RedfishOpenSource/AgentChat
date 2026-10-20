@@ -1,13 +1,12 @@
 # ChatAgent — 微信/钉钉智能聊天机器人
 
-参考 [jev-chat-windows-deepseek-jev](https://github.com/Aimark-dai/jev-chat-windows-deepseek-jev) 的核心流程实现的智能聊天机器人：
-**监听新消息 → 连发合并（静默 3 秒） → （可选）JEV 结构化预判 → 生成回复草稿 → （可选）JEV 复审排序 → 默认人工编辑确认后发送；可显式开启普通回复自动发送**。
+参考 [开源参考项目](https://github.com/Aimark-dai/开源参考项目) 的核心流程实现的智能聊天机器人：
+**监听新消息 → 连发合并（静默 3 秒） → 生成回复草稿 → 默认人工编辑确认后发送；可显式开启普通回复自动发送**。
 
 - **后端**：Python 3.11+ / FastAPI / WebSocket
 - **前端**：Vue 3 + Vite
 - **聊天来源**：微信（wechatauto-replica，适配微信 4.x 本地库增量轮询）、钉钉（DWS CLI Stream 事件流）
 - **LLM**：DeepSeek 等任意 OpenAI 兼容 Chat Completions 接口；默认内置 Mock 规则引擎（无需 API Key 即可跑通全流程）
-- **JEV（可选）**：结构化判断模块，提供 Mock 实现（本地规则）与 TypeSafe 官方 `/v1/systemone` 实现（参考项目同款流程），调用失败自动降级
 
 ## 架构
 
@@ -23,7 +22,6 @@
 │  └──────────────────┘   send_reply()  └──────────────┘            └────────┬─────────┘
 │                                            ▲                               │ 可选
 │  消息存储 MessageStore / 事件总线 EventBus    │ 人工审核            ┌─────────▼─────────┐
-│  REST API (/api/*) + WebSocket (/ws)        └───────────────────│ JEVJudge 预判/复审 │
 └────────────────────────────────────────────────────────────────┴───────────────────┘
           ▲
           │ HTTP + WebSocket (vite 代理)
@@ -36,9 +34,22 @@
 核心需求对应：
 
 1. **一旦监听到新消息，就触发生成回复** —— 每个连接器有独立监听循环（`BaseConnector._poll_loop`），
-   poll 到新消息立即回调 `AgentService.ingest()` → `engine.generate()`，全程毫秒级。
+   poll 到新消息立即回调 `AgentService.ingest()`，经过连发合并后调用 `engine.generate()`。
+   消息气泡实时显示合并、排队、启动、思考、工具执行、回复生成阶段及耗时，可展开查看执行记录与回复预览；
+   刷新或重连后恢复进行中的任务，完成/失败记录保留。工具进度取自 Agent 事件，思考阶段仅显示状态。
+   超时和连接中断会结束等待并提示原因，失败草稿仍需人工审核。
+   消息页选择联系人后可在底部「发送给 AI」补充背景或继续提问，生成结果始终待审核；
+   页面右上角可清空当前联系人的会话（保留聊天记录），处理中的会话须等待完成后清空。
+   Agent Studio 每个 Agent 提供「调试」入口，支持独立多轮对话、执行进度和新建会话；
+   调试使用已保存的工作空间与 Skills，会话与平台联系人隔离，调试结果不投递到平台。
+   ACP 的 Context/Skills/Extensions 等启动横幅会在预览、草稿与发送正文中过滤。
 2. **生成回复先实现一个接口** —— `app/engine/base.py::ReplyGenerator`（抽象接口），
-   已实现 `MockReplyGenerator`（规则）与 `LLMReplyGenerator`（DeepSeek/JEV 全链路）；后续 RAG 等实现只需继承该接口并在 `build_engine` 注册。
+
+## 在线使用说明与案例
+
+启动后打开 [使用说明与案例](http://127.0.0.1:8318/guide.html)，或点击工作台顶部同名入口。
+文档源文件是 `frontend/public/guide.html`，包含 Agent 客服描述、前后端分支与临时 worktree 流程、AgentR MCP 配置及调试步骤；内容随代码发布，不写入 SQLite。
+新建和每次保存 Agent 都会重新调用 LLM 改写描述，成功后写入工作空间 `.agents/memory/role.md`；失败会明确提示，重新保存可重试。
 
 ## 快速开始
 
@@ -47,10 +58,10 @@
 ```bash
 cd backend
 uv sync                                   # 安装依赖（自动管理 Python 虚拟环境）
-uv run uvicorn app.main:app --reload      # 启动，默认 http://127.0.0.1:8320
+uv run uvicorn app.main:app --reload --port 8318  # http://127.0.0.1:8318
 ```
 
-无 uv 时：`pip install fastapi "uvicorn[standard]" httpx pydantic pyyaml` 后 `python -m uvicorn app.main:app`。
+无 uv 时：`pip install fastapi "uvicorn[standard]" httpx pydantic pyyaml` 后 `python -m uvicorn app.main:app --port 8318`。
 
 启动后两个连接器（微信/钉钉）默认 **mock 模式** 自动运行，不依赖任何外部程序。
 
@@ -61,10 +72,10 @@ uv run uvicorn app.main:app --reload      # 启动，默认 http://127.0.0.1:832
 ```bash
 cd frontend
 npm install
-npm run dev        # http://localhost:5173 （/api 与 /ws 自动代理到后端 8320）
+npm run dev        # http://localhost:5173 （/api 与 /ws 自动代理到后端 8318）
 ```
 
-生产模式（推荐）：前端构建后由后端直接托管，访问 `http://127.0.0.1:8320` 即可：
+生产模式（推荐）：前端构建后由后端直接托管，访问 `http://127.0.0.1:8318` 即可：
 
 ```bash
 cd frontend && npm run build   # 产物在 frontend/dist，后端自动探测并托管
@@ -100,7 +111,6 @@ docker compose up -d
 ```bash
 cd backend
 uv run pytest                                  # 31 个单元/接口测试
-uv run python ../scripts/simulate.py           # 端到端模拟（含审核流、JEV 拦截验证）
 node ../scripts/ws-test.mjs                    # WebSocket 联调（需前后端同时在跑）
 ```
 
@@ -192,18 +202,14 @@ export CHATAGENT_LLM_API_KEY=sk-xxx
 
 任何 OpenAI 兼容接口都可用（改 `llm.base_url` / `llm.model`）。
 
-### 启用 JEV（可选）
 
 ```yaml
-jev:
   enabled: true
   provider: mock        # mock=本地规则判断；typesafe=官方接口
   # provider: typesafe 时：
-  api_key: "ts-xxx"     # 或环境变量 CHATAGENT_JEV_API_KEY
   base_url: "https://api.typesafe.ai"
 ```
 
-流程与参考项目一致：**JEV 预判（风险/意图/建议行动）注入提示词 → LLM 生成候选 → JEV 复审打分排序 →
 全部不合格时自动重写一次 → 仍不合格则拦截（页面可人工“忽略拦截发送”）**。
 
 ## 配置参考（环境变量优先级高于 config.yaml）
@@ -219,7 +225,6 @@ jev:
 | `CHATAGENT_KNOWLEDGE_DIR` | RAG 知识库目录（.md/.txt）；空 = 未启用 | 空 |
 | `CHATAGENT_EMBEDDING_ENABLED` / `_BASE_URL` / `_API_KEY` / `_MODEL` | RAG 语义检索开关/地址/密钥/模型 | false / 空(复用 llm) / 空(复用 llm) / 空 |
 | `CHATAGENT_LLM_VISION_MODEL` / `_VISION_BASE_URL` / `_VISION_API_KEY` | 图片理解模型/地址/密钥 | 空 / 空(复用 llm) / 空(复用 llm) |
-| `CHATAGENT_JEV_ENABLED` / `CHATAGENT_JEV_PROVIDER` / `CHATAGENT_JEV_API_KEY` | JEV 开关/实现/密钥 | false / mock / 空 |
 | `CHATAGENT_WECHAT_MODE` / `CHATAGENT_WECHAT_GROUP_REPLY` | 微信连接器模式 / 群聊回复方式 | mock / quote-at |
 | `CHATAGENT_DINGTALK_MODE` / `CHATAGENT_DINGTALK_DWS_BIN` / `CHATAGENT_DINGTALK_LISTEN_KIND` / `CHATAGENT_DINGTALK_REPLY_MODE` | 钉钉 dws 模式配置 | mock / dws / at-me / quote |
 
@@ -234,10 +239,10 @@ jev:
 
 `PUT /api/config`（前端「设置」面板）可运行时修改并立即生效：
 
-- 回复引擎（mock ↔ llm）、JEV 开关/实现、候选数量、温度、重试次数、**回复风格预设**
 - 群聊触发策略、非文本处理、连发合并时长、每会话生成限额、联系人白名单、告警渠道
 - **知识库目录**（前端「知识库」面板选择，或 PUT /api/config 的 `knowledge_dir`）与**语义检索开关**（`embedding_enabled`）
-- `persist: true` 时同步写回配置文件（`jev_api_key` 除外，不落盘）；连接器模式与监听地址等需重启
+- 设置面板点击「保存并立即生效」后，通过 `persist_to_db: true` 保存到当前 SQLite 数据库的 `app_settings` 表：包括 Agent、工作空间、超时、群聊触发、非文本处理和连发合并设置。服务启动时自动恢复，优先级为默认值/config.yaml < SQLite < 环境变量；无需配置 YAML 写入路径。
+- 继续使用同一个 `db_path`（默认 `backend/chatagent.db`）才能恢复设置，备份时应一并备份此数据库。隐藏的 ACP 鉴权配置也会保存，凭据为本机明文存储，请限制数据库文件访问权限。
 
 ## RAG 知识库回复
 
@@ -322,7 +327,6 @@ llm:
 
 ## 安全约束：默认人工确认
 
-- 生成结果默认为**草稿**（待确认状态）；`auto_send: true`（默认 false，前端可一键切换）时普通草稿自动发送，**blocked（JEV 拦截）草稿任何情况下永不自动发送**
 - 前端待审核回复会填入**可编辑草稿框**：修改后发送发送编辑稿，原稿保留在 `meta.edited_from`
 - 代码层面：`_dispatch()` 仅能被 `approve_reply()` 调用；blocked 草稿的自动发送在代码层被显式排除
 
@@ -331,7 +335,6 @@ llm:
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查 |
-| GET | `/api/status` | 引擎/JEV/连接器状态 |
 | GET | `/api/messages?platform=&chat_id=&limit=` | 消息列表 |
 | GET | `/api/replies?status=pending` | 回复列表（可按状态过滤） |
 | POST | `/api/replies/{id}/approve` `/reject` | 人工批准/驳回 |
@@ -365,6 +368,3 @@ backend 单元/接口测试:  175 passed（含连接器、持久化、白名单�
 审核或自动发送会记录 `sending`、`sent`、`failed` 或 `unknown` 状态。`unknown` 表示客户端无法确认平台是否收到消息，界面要求先核对会话再显式确认重试，避免无提示重复发送；服务重启时遗留的 `sending` 状态会恢复为 `unknown`。
 
 ## 声明
-
-- 本项目仅参考了 jev-chat-windows-deepseek-jev 的**处理流程设计**（预判→生成→复审→人工可控），代码为全新实现，未使用其源码。
-- 请仅在有权查看的聊天场景中使用；涉及转账、红包、密码等内容默认被 JEV 门禁拦截。

@@ -14,12 +14,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Sequence
 
-from ..config import Settings
+from ..agents_registry import find_agent
+from ..config import ACPSettings, Settings
 from ..connectors import BaseConnector, build_connectors
 from ..connectors.base import ConnectorStartError
-from ..engine import ReplyGenerator, build_engine
-from ..engine.jev import JEVJudge
+from ..engine import ACPAgentGenerator, ReplyGenerator, build_engine
 from ..engine.vision import VisionDescriber, resolve_image_source
+from ..engine.output import clean_agent_reply
 from ..alerts import AlertManager
 from ..models import (
     ChatMessage,
@@ -48,17 +49,32 @@ class AgentService:
         store: MessageStore,
         bus: EventBus,
         engine: ReplyGenerator,
-        jev: JEVJudge | None = None,
         alerts: AlertManager | None = None,
         kb: KnowledgeBase | None = None,
+        db=None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.bus = bus
         self.engine = engine
-        self.jev = jev
         self.alerts = alerts or AlertManager()
         self.kb = kb or KnowledgeBase()
+        self.db = db
+        self.agent_profiles = {p["id"]: p for p in (db.list_agent_profiles() if db else [])}
+        self.agent_assignments = {
+            (item["platform"], item["chat_id"]): item["agent_id"]
+            for item in (db.list_agent_assignments() if db else [])
+        }
+        self.profile_engines: dict[str, ACPAgentGenerator] = {}
+        self.profile_tasks: dict[str, asyncio.Task] = {}
+        for profile in self.agent_profiles.values():
+            if profile.get("pending"):
+                profile.update(pending=False, rewrite_status="failed", rewrite_error="上次角色改写因服务重启中断，请重新保存")
+                if db:
+                    db.save_agent_profile(profile)
+        self.contact_configs: dict[tuple[str, str], dict] = {
+            k: v for k, v in (db.list_contact_configs().items() if db else {})
+        }
         # 每个连接器可配置独立知识库（connector.knowledge_dir）；未配置时回退全局 self.kb
         self.kbs: dict[Platform, KnowledgeBase] = {}
         for platform in (Platform.WECHAT, Platform.DINGTALK):
@@ -75,6 +91,9 @@ class AgentService:
         self._timers: dict[tuple[str, str], asyncio.Task] = {}
         # 限流窗口：每会话的生成时间戳
         self._gen_windows: dict[tuple[str, str], deque[float]] = {}
+        # 思考状态（合并中/生成中）：按会话广播，供前端展示进度
+        self._thinking: dict[str, dict] = {}
+        self._progress_published: dict[str, float] = {}
         self._recover_task: asyncio.Task | None = None
 
     # ---------- 连接器管理 ----------
@@ -138,6 +157,65 @@ class AgentService:
         self._publish_status()
         return conn
 
+    async def regenerate_with_supplement(self, origin: ChatMessage, extra: str) -> ChatMessage:
+        """对某条收到的消息补充说明后重新生成：补充作为新消息入链，再走正常生成管线。"""
+        supplement = ChatMessage(
+            platform=origin.platform,
+            chat_id=origin.chat_id,
+            sender="操作员",
+            content=extra,
+            meta={"supplement_to": origin.id, "operator_input": True,
+                  **({"dws": origin.meta["dws"]} if origin.meta.get("dws") else {})},
+        )
+        self.store.add(supplement)
+        self.bus.publish({"type": "message", "message": supplement.model_dump(mode="json")})
+        await self._generate_and_reply(supplement)
+        replies = [
+            m for m in self.store.list_messages(chat_id=origin.chat_id, direction="out")
+            if m.reply_to == supplement.id
+        ]
+        return replies[-1] if replies else supplement
+
+    async def contact_chat(self, platform: Platform, chat_id: str, content: str) -> tuple[ChatMessage, ChatMessage | None]:
+        """操作员补充当前对话：复用联系人会话，始终只生成待审核草稿。"""
+        origin = next((m for m in reversed(self.store.list_messages(
+            platform=platform.value, chat_id=chat_id, direction="in",
+        )) if not m.meta.get("operator_input")), None)
+        meta = {"operator_input": True}
+        if origin and origin.meta.get("dws"):
+            meta["dws"] = origin.meta["dws"]
+        incoming = ChatMessage(
+            platform=platform, chat_id=chat_id, sender="操作员", content=content, meta=meta,
+        )
+        self.store.add(incoming)
+        self.bus.publish({"type": "message", "message": incoming.model_dump(mode="json")})
+        await self._generate_and_reply(incoming)
+        reply = next((m for m in self.store.list_messages(
+            platform=platform.value, chat_id=chat_id, direction="out",
+        ) if m.reply_to == incoming.id), None)
+        return incoming, reply
+
+    async def debug_chat(self, profile: dict, session_id: str, content: str) -> tuple[ChatMessage, ChatMessage | None]:
+        """直接调试指定 Agent；使用独立 web 会话，禁止平台投递。"""
+        incoming = ChatMessage(
+            platform=Platform.WEB, chat_id=f"debug:{profile['id']}:{session_id}",
+            sender="开发者", content=content,
+            meta={"operator_input": True, "debug_profile_id": profile["id"]},
+        )
+        self.store.add(incoming)
+        self.bus.publish({"type": "message", "message": incoming.model_dump(mode="json")})
+        await self._generate_and_reply(incoming, profile=profile)
+        reply = next((m for m in self.store.list_messages(
+            platform="web", chat_id=incoming.chat_id, direction="out",
+        ) if m.reply_to == incoming.id), None)
+        return incoming, reply
+
+    def contact_processing(self, platform: Platform, chat_id: str) -> bool:
+        return bool(self._pending.get((platform.value, chat_id))) or any(
+            state["platform"] == platform.value and state["chat_id"] == chat_id
+            for state in self._thinking.values()
+        )
+
     async def stop_connector(self, platform: Platform) -> BaseConnector:
         conn = self._get_connector(platform)
         await conn.stop()
@@ -170,11 +248,132 @@ class AgentService:
         logger.info("[agent] 新消息 %s(%s/%s): %s", msg.id, msg.platform.value, msg.sender, msg.content[:40])
         if not self._contact_allowed(stored):
             await self._ignore(
-                stored, f"不在联系人白名单（chat={stored.chat_id}），可在前台白名单面板添加"
+                stored, f"未选择监听该联系人（chat={stored.chat_id}），可在「监听联系人」中添加"
             )
             return stored
         await self._schedule(stored)
         return stored
+
+    def reset_contact_session(self, platform: Platform, chat_id: str) -> bool:
+        """清空指定联系人在所有引擎实例中的 Agent 会话（下条消息重新开启）。"""
+        cleared = False
+        for engine in [self.engine, *self.profile_engines.values()]:
+            fn = getattr(engine, "reset_session", None)
+            if fn is not None:
+                fn(platform.value, chat_id)
+                cleared = True
+        return cleared
+
+    def agent_assignments_list(self) -> list[dict[str, str]]:
+        """联系人绑定清单（platform/chat_id/agent_id），供前端展示。"""
+        return [
+            {"platform": platform, "chat_id": chat_id, "agent_id": agent_id}
+            for (platform, chat_id), agent_id in self.agent_assignments.items()
+        ]
+
+    def profile_for(self, platform: Platform, chat_id: str) -> dict | None:
+        """联系人绑定的 Agent 配置；未绑定时回退全局默认引擎。"""
+        agent_id = self.agent_assignments.get((platform.value, chat_id))
+        return self.agent_profiles.get(agent_id) if agent_id else None
+
+    def engine_for_profile(self, profile: dict) -> ACPAgentGenerator:
+        """每个 Agent 配置一个独立 ACP 引擎实例（会话互相隔离）。"""
+        if profile.get("pending"):
+            raise ValueError("Agent 正在重新改写角色，请完成后再使用")
+        if profile.get("rewrite_status") == "failed":
+            raise ValueError(profile.get("rewrite_error") or "Agent 角色改写失败，请重新保存")
+        engine = self.profile_engines.get(profile["id"])
+        if engine is not None:
+            return engine
+        preset = find_agent(str(profile.get("engine") or ""))
+        command = str(profile.get("command") or "")
+        mode = (preset or {}).get("mode", "acp")
+        if profile.get("engine") == "pi" and Path(command).stem.lower() == "pi":
+            mode = "pi"  # 兼容手动配置的 pi RPC；pi-acp 使用标准 ACP
+        cfg = ACPSettings(
+            mode=mode,
+            command=str(profile.get("command") or ""),
+            args=str(profile.get("args") or ""),
+            cwd=str(profile.get("workspace") or ""),
+            timeout=float(profile.get("timeout") or 300),
+            instructions=str(profile.get("instructions") or ""),
+            skills=list(profile.get("skills") or []),
+            capabilities=list(profile.get("capabilities") or []),
+            knowledge_dir=str(profile.get("knowledge_dir") or ""),
+            mcp_servers=list(profile.get("mcp_servers") or []),
+            plan_before_execute=bool(profile.get("plan_before_execute")),
+        )
+        engine = ACPAgentGenerator(cfg)
+        self.profile_engines[profile["id"]] = engine
+        return engine
+
+    def save_agent_profile(self, profile: dict) -> None:
+        """保存/更新 Agent 配置并重建其运行时引擎。"""
+        if self.db is not None:
+            self.db.save_agent_profile(profile)
+        self.agent_profiles[profile["id"]] = profile
+        self._discard_profile_engine(profile["id"])
+
+    def delete_agent_profile(self, agent_id: str) -> None:
+        """删除 Agent 配置，并解除全部联系人绑定。"""
+        task = self.profile_tasks.pop(agent_id, None)
+        if task:
+            task.cancel()
+        if self.db is not None:
+            self.db.delete_agent_profile(agent_id)
+        self.agent_profiles.pop(agent_id, None)
+        self.agent_assignments = {
+            key: aid for key, aid in self.agent_assignments.items() if aid != agent_id
+        }
+        self._discard_profile_engine(agent_id)
+
+    def assign_agent(self, platform: str, chat_id: str, agent_id: str | None) -> None:
+        """绑定/解绑联系人的 Agent；agent_id=None 表示使用默认引擎。"""
+        key = (platform, chat_id)
+        if agent_id is None:
+            if self.db is not None:
+                self.db.unassign_agent(platform, chat_id)
+            self.agent_assignments.pop(key, None)
+            return
+        if self.db is not None:
+            self.db.assign_agent(platform, chat_id, agent_id)
+        self.agent_assignments[key] = agent_id
+
+    def _discard_profile_engine(self, agent_id: str) -> None:
+        engine = self.profile_engines.pop(agent_id, None)
+        if engine is None:
+            return
+        async def _close():
+            try:
+                await engine.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            asyncio.get_running_loop().create_task(_close())
+        except RuntimeError:  # pragma: no cover - 同步测试环境无事件循环
+            pass
+
+    def contact_config_for(self, platform: Platform, chat_id: str) -> dict:
+        """联系人监听配置；未单独设置时回退全局默认。"""
+        cfg = self.contact_configs.get((platform.value, chat_id)) or {}
+        s = self.settings
+        return {
+            "timeout": float(cfg.get("timeout") or s.acp.timeout),
+            "group_trigger": str(cfg.get("group_trigger") or s.group_trigger),
+            "non_text_action": str(cfg.get("non_text_action") or s.non_text_action),
+            "debounce_seconds": max(0.0, float(cfg.get("debounce_seconds") if cfg.get("debounce_seconds") is not None else s.debounce_seconds)),
+        }
+
+    def save_contact_config(self, platform: str, chat_id: str, config: dict) -> None:
+        """保存联系人监听配置（未选中监听的联系人应删除配置）。"""
+        if self.db is not None:
+            self.db.save_contact_config(platform, chat_id, config)
+        self.contact_configs[(platform, chat_id)] = dict(config)
+
+    def delete_contact_config(self, platform: str, chat_id: str) -> None:
+        if self.db is not None:
+            self.db.delete_contact_config(platform, chat_id)
+        self.contact_configs.pop((platform, chat_id), None)
 
     def effective_contacts(self, platform: Platform) -> list[str]:
         """平台生效白名单：连接器独立名单优先，未配置时回退全局名单（空 = 允许全部）。"""
@@ -220,13 +419,15 @@ class AgentService:
             logger.warning("[%s] embedding 配置无效，仅词面检索: %s", platform.value if platform else "global", exc)
 
     def _contact_allowed(self, m: ChatMessage) -> bool:
-        """联系人白名单：空列表 = 允许全部；含 "*" = 允许全部；否则按会话名/用户名精确匹配。
+        """监听白名单：默认不监听任何人，只有选中的联系人才会监听；"*" = 显式允许全部。
 
         弹窗保存的是显示名（微信备注/昵称、钉钉群名），而消息 meta 里只有 username/cid；
         因此匹配前先经连接器把显示名反解为 username，一并纳入比对。
         """
         allowed = self.effective_contacts(m.platform)
-        if not allowed or "*" in allowed:
+        if not allowed:
+            return False
+        if "*" in allowed:
             return True
         allowed_set = {str(x).strip() for x in allowed if str(x).strip()}
         conn = self.connectors.get(m.platform)
@@ -249,6 +450,44 @@ class AgentService:
                     candidates.add(str(v))
         return bool(candidates & allowed_set)
 
+    def processing_snapshot(self) -> dict[str, dict]:
+        """刷新/重连时恢复进行中的任务；按消息隔离，避免同联系人互相覆盖。"""
+        return {mid: self._progress_copy(state) for mid, state in self._thinking.items()}
+
+    @staticmethod
+    def _progress_copy(state: dict) -> dict:
+        return {**state, "steps": [dict(step) for step in state.get("steps", [])]}
+
+    def _thinking_set(self, incoming: ChatMessage, phase: str, **extra) -> None:
+        now = int(time.time() * 1000)
+        state = self._thinking.setdefault(incoming.id, {
+            "message_id": incoming.id, "platform": incoming.platform.value,
+            "chat_id": incoming.chat_id, "since": now, "steps": [], "preview": "",
+        })
+        detail = str(extra.pop("detail", ""))[:240]
+        delta = str(extra.pop("preview_delta", ""))
+        changed = state.get("phase") != phase or state.get("detail") != detail
+        state.update(phase=phase, detail=detail, updated_at=now, **extra)
+        if delta:
+            state["preview"] = (state["preview"] + delta)[-2400:]
+        if changed:
+            state["steps"] = [*state["steps"], {"phase": phase, "detail": detail, "ts": now}][-30:]
+        # 文本增量合并广播，避免逐 token 淹没事件队列；阶段变化立即广播。
+        last = self._progress_published.get(incoming.id, 0)
+        if changed or time.monotonic() - last >= 0.2:
+            self._progress_published[incoming.id] = time.monotonic()
+            self.bus.publish({"type": "processing", "state": self._progress_copy(state)})
+
+    def _thinking_done(self, incoming: ChatMessage, phase: str = "completed", detail: str = "回复草稿已生成，等待审核") -> None:
+        if incoming.id not in self._thinking:
+            return
+        self._thinking_set(incoming, phase, detail=detail, finished_at=int(time.time() * 1000))
+        state = self._thinking.pop(incoming.id)
+        self._progress_published.pop(incoming.id, None)
+        incoming.meta = {**incoming.meta, "processing": self._progress_copy(state)}
+        self.store.update(incoming)
+        self.bus.publish({"type": "message_updated", "message": incoming.model_dump(mode="json")})
+
     # ---------- 连发合并（debounce） ----------
     def _key(self, m: ChatMessage) -> tuple[str, str]:
         return (m.platform.value, m.chat_id)
@@ -259,15 +498,17 @@ class AgentService:
         old = self._timers.get(key)
         if old is not None and not old.done():
             old.cancel()  # 同会话有新消息 → 重置静默计时
-        if self._debounce <= 0:
+        debounce = self.contact_config_for(msg.platform, msg.chat_id)["debounce_seconds"]
+        if debounce <= 0:
             self._timers.pop(key, None)
             await self._flush(key)  # 关闭合并：保持同步语义（响应内完成生成）
         else:
-            self._timers[key] = asyncio.create_task(self._debounce_wait(key))
+            self._thinking_set(msg, "merging", wait=debounce, detail="等待连发消息合并")
+            self._timers[key] = asyncio.create_task(self._debounce_wait(key, debounce))
 
-    async def _debounce_wait(self, key: tuple[str, str]) -> None:
+    async def _debounce_wait(self, key: tuple[str, str], debounce: float) -> None:
         try:
-            await asyncio.sleep(self._debounce)
+            await asyncio.sleep(debounce)
         except asyncio.CancelledError:
             return
         self._timers.pop(key, None)
@@ -286,21 +527,35 @@ class AgentService:
                 continue
             merged.status = STATUS_IGNORED
             merged.meta = {**merged.meta, "ignore_reason": f"连发合并到消息 {primary.id}"}
+            self._thinking_done(merged, "skipped", f"连发合并到消息 {primary.id}")
             self.store.update(merged)
             self.bus.publish({"type": "message_updated", "message": merged.model_dump(mode="json")})
         await self._generate_and_reply(primary)
 
-    async def _generate_and_reply(self, incoming: ChatMessage) -> None:
+    async def _generate_and_reply(self, incoming: ChatMessage, profile: dict | None = None) -> None:
+        """生成生命周期的兜底清理，包括策略跳过、异常及取消。"""
+        try:
+            await self._generate_reply(incoming, profile=profile)
+        except asyncio.CancelledError:
+            self._thinking_done(incoming, "cancelled", "处理已中断")
+            raise
+        except Exception:
+            self._thinking_done(incoming, "failed", "处理失败，请重试或人工回复")
+            raise
+        finally:
+            self._thinking_done(incoming)
+
+    async def _generate_reply(self, incoming: ChatMessage, profile: dict | None = None) -> None:
         """需求(1)：监听到新消息后生成回复（全部消息场景显式处理）。"""
         # ---- 场景策略过滤 ----
-        skip_reason = self._policy_skip_reason(incoming)
+        skip_reason = None if incoming.meta.get("operator_input") else self._policy_skip_reason(incoming)
         if skip_reason:
             await self._ignore(incoming, skip_reason)
             return
 
         # ---- 非文本消息 ----
         if incoming.msg_type != "text":
-            if self.settings.non_text_action == "skip":
+            if self.contact_config_for(incoming.platform, incoming.chat_id)["non_text_action"] == "skip":
                 await self._ignore(incoming, f"非文本消息({incoming.msg_type})，策略为忽略")
                 return
             await self._handle_non_text(incoming)
@@ -313,26 +568,46 @@ class AgentService:
             return
 
         # ---- 文本消息：正常引擎生成 ----
+        profile = profile or self.profile_for(incoming.platform, incoming.chat_id)
+        cc = self.contact_config_for(incoming.platform, incoming.chat_id)
+        if incoming.meta.get("debug_profile_id") and profile:
+            cc["timeout"] = float(profile.get("timeout") or 300)
+        self._thinking_set(
+            incoming, "preparing", detail="正在准备上下文",
+            agent=profile["name"] if profile else ("默认 Agent" if self.engine.name == "acp" else self.engine.name),
+            timeout=cc["timeout"],
+        )
         history = [
             h for h in self.store.history(incoming.platform, incoming.chat_id,
                                           limit=self.settings.llm.max_history)
             if h.id != incoming.id
         ]
         try:
-            result = await self.engine.generate(incoming, history, kb=self.kb_for(incoming.platform))
+            engine = self.engine_for_profile(profile) if profile else self.engine
+            async with asyncio.timeout(cc["timeout"]):
+                if isinstance(engine, ACPAgentGenerator):
+                    result = await engine.generate(
+                        incoming, history, kb=self.kb_for(incoming.platform),
+                        on_progress=lambda phase, **extra: self._thinking_set(incoming, phase, **extra),
+                    )
+                else:
+                    self._thinking_set(incoming, "thinking", detail="正在等待 AI 生成回复")
+                    result = await engine.generate(incoming, history, kb=self.kb_for(incoming.platform))
         except Exception as exc:  # noqa: BLE001
             # 降级：引擎不可用时生成错误占位草稿，进入人工流程（消息绝不静默丢失）
-            self._record_llm_outcome(False, str(exc))
-            logger.exception("生成回复失败: %s", exc)
+            error = f"超过 {cc['timeout']:g} 秒仍未完成，已停止等待" if isinstance(exc, TimeoutError) else str(exc)[:200]
+            self._thinking_done(incoming, "failed", error or "AI 调用失败")
+            self._record_llm_outcome(False, error)
+            logger.exception("生成回复失败: %s", error)
             reply = ChatMessage(
                 platform=incoming.platform,
                 chat_id=incoming.chat_id,
                 sender="assistant",
                 content="⚠️ AI 引擎暂时不可用，请人工回复这条消息",
                 direction=DIRECTION_OUT,
-                status=STATUS_PENDING,
+                status="debug" if incoming.meta.get("debug_profile_id") else STATUS_PENDING,
                 reply_to=incoming.id,
-                meta={"engine": "error", "error": str(exc)[:200]},
+                meta={"engine": "error", "error": error, **({"debug_profile_id": profile["id"]} if incoming.meta.get("debug_profile_id") else {})},
             )
             self._apply_reply_routing(reply, incoming)
             self.store.add(reply)
@@ -340,11 +615,10 @@ class AgentService:
             return
         self._record_llm_outcome(True)
 
-        # blocked 永不自动发送；普通草稿开启 auto_send 后才进入投递流程。
-        if result.blocked:
-            status = STATUS_BLOCKED
-        else:
-            status = STATUS_PENDING
+        # 普通草稿默认待审核；开启 auto_send 后才进入投递流程。
+        status = "debug" if incoming.meta.get("debug_profile_id") else STATUS_PENDING
+        if incoming.meta.get("debug_profile_id"):
+            result.meta["debug_profile_id"] = profile["id"]
 
         reply = ChatMessage(
             platform=incoming.platform,
@@ -363,9 +637,10 @@ class AgentService:
         logger.info(
             "[agent] 已生成回复 %s -> %s [%s]%s",
             reply.id, incoming.id, status,
-            "（自动投递中）" if self.settings.auto_send and status == STATUS_PENDING else "（等待人工确认）",
+            "（仅调试）" if status == "debug" else ("（自动投递中）" if self.settings.auto_send and not incoming.meta.get("operator_input") else "（等待人工确认）"),
         )
-        if self.settings.auto_send and status == STATUS_PENDING:
+        self._thinking_done(incoming, detail="调试回复已生成" if status == "debug" else "回复草稿已生成，等待审核")
+        if self.settings.auto_send and status == STATUS_PENDING and not incoming.meta.get("operator_input"):
             await self._dispatch(reply)
 
     async def _handle_non_text(self, incoming: ChatMessage) -> None:
@@ -383,6 +658,7 @@ class AgentService:
                 logger.info("[vision] 图片消息无 image_path/image_url 元数据，使用占位草稿")
             else:
                 try:
+                    self._thinking_set(incoming, "thinking", agent="图片识别", detail="正在识别图片内容")
                     desc = await self._vision.describe(source)
                     content = f"[图片] AI 识别：{desc}"
                     meta = {"engine": "vision", "vision_model": self._vision.model,
@@ -488,11 +764,12 @@ class AgentService:
                 updates[key] = str(updates[key]).strip()
         if updates.get("acp_cwd") and not Path(updates["acp_cwd"]).expanduser().is_dir():
             raise ValueError(f"Agent 工作空间目录不存在: {updates['acp_cwd']}")
+        if (updates.get("engine", s.engine) == "acp"
+                and not updates.get("acp_command", s.acp.command).strip()):
+            raise ValueError("engine=acp 需要先配置 Agent 启动命令（acp_command）")
         if updates.get("acp_timeout") is not None:
             if not (5.0 <= float(updates["acp_timeout"]) <= 3600):
                 raise ValueError("acp_timeout 范围 5-3600 秒")
-        if updates.get("jev_provider") is not None and updates["jev_provider"] not in ("mock", "typesafe"):
-            raise ValueError("jev_provider 仅支持 mock / typesafe")
         if updates.get("num_candidates") is not None and not 1 <= int(updates["num_candidates"]) <= 5:
             raise ValueError("num_candidates 范围 1-5")
         if updates.get("temperature") is not None:
@@ -538,20 +815,6 @@ class AgentService:
                 s.engine = engine
                 rebuild = True
                 changed.append("engine")
-
-        if updates.get("jev_enabled") is not None:
-            s.jev.enabled = bool(updates["jev_enabled"])
-            if self.jev is not None:
-                self.jev.enabled = s.jev.enabled
-            changed.append("jev_enabled")
-        if updates.get("jev_provider") is not None:
-            s.jev.provider = updates["jev_provider"]
-            rebuild = True
-            changed.append("jev_provider")
-        if updates.get("jev_api_key"):
-            s.jev.api_key = str(updates["jev_api_key"])
-            rebuild = True
-            changed.append("jev_api_key")
 
         llm_config_changed = False
         for key, attr in (("llm_base_url", "base_url"), ("llm_model", "model"), ("llm_api_key", "api_key")):
@@ -673,14 +936,12 @@ class AgentService:
             changed.append("auto_send")
 
         if rebuild:
-            old_engine, old_jev = self.engine, self.jev
-            self.engine, self.jev = build_engine(s, kb=self.kb)
-            for closer in (old_engine, old_jev):
-                if closer is not None:
-                    try:
-                        await closer.aclose()
-                    except Exception:  # noqa: BLE001
-                        pass
+            old_engine = self.engine
+            self.engine = build_engine(s, kb=self.kb)
+            try:
+                await old_engine.aclose()
+            except Exception:  # noqa: BLE001
+                pass
             changed.append("engine_rebuilt")
         return {"changed": changed}
 
@@ -718,12 +979,13 @@ class AgentService:
 
     # ---------- 消息场景策略 ----------
     def _policy_skip_reason(self, m: ChatMessage) -> str | None:
-        """返回需要忽略的原因；None 表示正常处理。"""
+        """返回需要忽略的原因；None 表示正常处理（群聊策略按联系人配置）。"""
         if m.msg_type == "system":
             return "系统消息不生成回复"
-        if m.is_group and self.settings.group_trigger == "listen-only":
+        trigger = self.contact_config_for(m.platform, m.chat_id)["group_trigger"]
+        if m.is_group and trigger == "listen-only":
             return "群聊策略为只监听不回复"
-        if m.is_group and self.settings.group_trigger == "at-mention" and not m.at_me:
+        if m.is_group and trigger == "at-mention" and not m.at_me:
             return "群聊消息未@我（策略：仅回复@我）"
         return None
 
@@ -733,10 +995,17 @@ class AgentService:
         m.meta = {**m.meta, "ignore_reason": reason}
         self.store.update(m)
         self.bus.publish({"type": "message_updated", "message": m.model_dump(mode="json")})
+        self._thinking_done(m, "skipped", reason)
         logger.info("[agent] 消息已忽略(%s): %s", reason, m.id)
 
     async def _dispatch(self, reply: ChatMessage) -> str:
         """统一投递入口，返回 sent/failed/unknown，且先广播 sending 状态。"""
+        if reply.platform == Platform.WEB or reply.meta.get("debug_profile_id"):
+            raise ValueError("调试回复仅供本地查看，不能发送到平台")
+        cleaned = clean_agent_reply(reply.content)
+        if not cleaned:
+            raise ValueError("回复没有可发送的正文，请编辑后再发送")
+        reply.content = cleaned
         conn = self.connectors.get(reply.platform)
         reply.status = STATUS_SENDING
         self.store.update(reply)
@@ -764,6 +1033,8 @@ class AgentService:
         reply = self.store.get(reply_id)
         if reply is None or reply.direction != DIRECTION_OUT:
             raise KeyError(reply_id)
+        if reply.platform == Platform.WEB or reply.meta.get("debug_profile_id"):
+            raise ValueError("调试回复仅供本地查看，不能发送到平台")
         allowed = (STATUS_PENDING, STATUS_BLOCKED, STATUS_FAILED)
         if reply.status == STATUS_UNKNOWN and not confirm_unknown:
             raise ValueError("上次投递结果不确定，请核对平台后再次确认重试")
@@ -853,6 +1124,12 @@ class AgentService:
         return str(base_dir / name)
 
     async def shutdown(self) -> None:
+        tasks = list(self.profile_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.profile_tasks.clear()
         # 尽力冲刷未处理的连发积压，避免丢草稿（消息已落盘，草稿生成后也会落盘）
         for key in list(self._pending.keys()):
             try:
@@ -869,15 +1146,12 @@ class AgentService:
             self._watch_task.cancel()
             self._watch_task = None
         await self.stop_all()
-        try:
-            await self.engine.aclose()
-        except Exception:  # noqa: BLE001
-            pass
-        if self.jev is not None:
+        for engine in [self.engine, *self.profile_engines.values()]:
             try:
-                await self.jev.aclose()
+                await engine.aclose()
             except Exception:  # noqa: BLE001
-                pass
+                logger.exception("[agent] 关闭 Agent 引擎失败")
+        self.profile_engines.clear()
         if self._vision is not None:
             try:
                 await self._vision.aclose()

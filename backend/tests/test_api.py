@@ -24,7 +24,7 @@ def test_status(client):
 
 def test_config_masks_keys(client):
     data = client.get("/api/config").json()
-    assert "llm" in data and "jev" in data
+    assert "llm" in data and "acp" in data
 
 
 def test_simulate_wechat_generates_reply(client):
@@ -147,6 +147,21 @@ def test_connector_stop_start(client):
     assert client.post("/api/connectors/qq/stop").status_code == 404
 
 
+def test_websocket_hello_recovers_active_processing(client):
+    client.app.state.settings.debounce_seconds = 30
+    response = client.post('/api/simulate', json={
+        'platform': 'wechat', 'chat_id': 'restore-progress', 'content': '等待处理',
+    })
+    assert response.status_code == 200
+    incoming_id = response.json()['message']['id']
+    with client.websocket_connect('/ws') as ws:
+        hello = ws.receive_json()
+        state = hello['processing'][incoming_id]
+        assert state['phase'] == 'merging'
+        assert state['chat_id'] == 'restore-progress'
+        assert state['since'] and state['wait'] == 30
+
+
 def test_websocket_events(client):
     with client.websocket_connect("/ws") as ws:
         hello = ws.receive_json()
@@ -154,7 +169,15 @@ def test_websocket_events(client):
         client.post(
             "/api/simulate", json={"platform": "wechat", "chat_id": "ws1", "content": "你好"}
         )
-        types = []
-        for _ in range(2):
-            types.append(ws.receive_json()["type"])
-        assert types == ["message", "reply"]
+        assert hello["processing"] == {}
+        events = []
+        for _ in range(10):
+            event = ws.receive_json()
+            events.append(event)
+            if event["type"] == "message_updated" and event["message"].get("meta", {}).get("processing", {}).get("finished_at"):
+                break
+        assert events[0]["type"] == "message"
+        assert any(ev["type"] == "reply" for ev in events)
+        phases = [ev["state"]["phase"] for ev in events if ev["type"] == "processing"]
+        assert phases == ["preparing", "thinking", "completed"]
+        assert events[-1]["message"]["meta"]["processing"]["phase"] == "completed"

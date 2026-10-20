@@ -5,7 +5,7 @@
 
 $ErrorActionPreference = 'Continue'
 $Root = Split-Path -Parent $PSScriptRoot   # 项目根目录（scripts/ 的上一级）
-$Port = 8320
+$Port = 8318
 $Url = "http://127.0.0.1:$Port"
 
 function Get-ListenerPids([int]$TargetPort) {

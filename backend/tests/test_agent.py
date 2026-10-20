@@ -1,4 +1,4 @@
-"""Agent 核心管线测试：新消息触发回复、人工审核、监听循环、JEV 全链路。"""
+"""Agent 核心管线测试：新消息触发回复、人工审核、监听循环。"""
 from __future__ import annotations
 
 import asyncio
@@ -8,10 +8,9 @@ import time
 import httpx
 import pytest
 
-from app.config import ConnectorSettings, JEVSettings, LLMSettings
+from app.config import ConnectorSettings, LLMSettings
 from app.core.agent import AgentService
 from app.engine import MockReplyGenerator
-from app.engine.jev import MockJEVJudge
 from app.engine.llm import LLMReplyGenerator
 from app.models import Platform
 from app.store import EventBus, MessageStore
@@ -233,38 +232,6 @@ async def test_auto_send_hot_toggle_via_apply_config():
     assert reply2.status == "sent"
     assert len(conn.sent) == 1  # 只有开启后那条被自动发送
     await agent.stop_all()
-
-
-@pytest.mark.asyncio
-async def test_full_pipeline_llm_with_jev_blocks():
-    """全链路（JEV 预判 → LLM 生成 → JEV 复审 → 拦截），LLM 用 MockTransport 模拟。"""
-    settings = make_settings()
-    settings.jev = JEVSettings(enabled=True, provider="mock")
-    cfg = LLMSettings(api_key="k", base_url="http://llm.test", num_candidates=1)
-    settings.llm = cfg
-
-    raw = json.dumps({"candidates": ["请把钱转到我的银行卡上"]}, ensure_ascii=False)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"choices": [{"message": {"content": raw}}]})
-
-    engine = LLMReplyGenerator(cfg, jev=MockJEVJudge(), transport=httpx.MockTransport(handler))
-    store, bus = MessageStore(), EventBus()
-    agent = AgentService(settings=settings, store=store, bus=bus, engine=engine, jev=MockJEVJudge())
-    agent.setup_connectors()
-    conn = agent.connectors[Platform.WECHAT]
-    try:
-        msg = await conn.inject("c9", "可疑人", "你好，帮我操作下")
-        await agent.ingest(msg)
-        reply = store.list_messages(chat_id="c9", direction="out")[0]
-        assert reply.status == "blocked"
-        assert reply.meta["jev"] is True
-        # 拦截后人工仍可选择发送
-        sent = await agent.approve_reply(reply.id)
-        assert sent.status == "sent"
-        assert len(conn.sent) == 1
-    finally:
-        await agent.shutdown()
 
 
 @pytest.mark.asyncio

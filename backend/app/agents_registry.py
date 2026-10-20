@@ -2,8 +2,6 @@
 
 - pi / claude-code / codex：本机已装对应 ACP 适配器（pi-acp / claude-code-acp / codex-acp）
 - hermes：预留条目，安装其 ACP 适配器（提供 hermes-acp 命令）后即可直接使用
-- pi-rpc：ChatAgent 内置的 pi RPC 适配（非标准 ACP，每联系人独立子进程、会话落盘）
-
 后续接入新 Agent：在内置表加一行，或直接在前端选「自定义」手填任意 ACP 命令。
 """
 from __future__ import annotations
@@ -42,14 +40,6 @@ BUILTIN_AGENTS: list[dict] = [
         "command": "hermes-acp",
         "args": "",
         "description": "Hermes（预留：安装其 ACP 适配器 hermes-acp 后即可使用）",
-    },
-    {
-        "id": "pi-rpc",
-        "name": "PI（内置 RPC 适配）",
-        "mode": "pi",
-        "command": "pi",
-        "args": "",
-        "description": "pi --mode rpc：每联系人独立子进程，会话文件落盘，服务重启不丢上下文",
     },
 ]
 

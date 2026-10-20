@@ -53,14 +53,6 @@ acp:                                 # 可插拔 Agent 接入（engine=acp 时�
   env_key: ""                        # 环境变量值（API Key）
   timeout: 300                       # 单次回复超时（秒），Agent 执行工具可能较慢
 
-jev:                                 # JEV 结构化判断（可选，参考 TypeSafe JEV）
-  enabled: false
-  provider: mock                     # mock | typesafe
-  api_key: ""                        # typesafe 需要；或环境变量 CHATAGENT_JEV_API_KEY
-  base_url: "https://api.typesafe.ai"
-  model: "jev-latest"
-  rewrite_on_fail: true              # 复审全部不合格时重写一次
-
 embedding:                           # RAG 语义检索（可选，OpenAI 兼容 /embeddings 接口）
   enabled: false                     # 关闭时仅用零成本词面检索；开启后词面+向量混合排序
   base_url: ""                       # 空 = 复用 llm.base_url（同一服务商时零额外配置）

@@ -60,18 +60,6 @@ class EmbeddingSettings:
 
 
 @dataclass
-class JEVSettings:
-    """JEV 结构化判断配置（参考 TypeSafe JEV：预判 + 复审排序，可选）。"""
-
-    enabled: bool = False
-    provider: str = "mock"  # mock | typesafe
-    api_key: str = ""
-    base_url: str = "https://api.typesafe.ai"
-    model: str = "jev-latest"
-    rewrite_on_fail: bool = True
-
-
-@dataclass
 class ACPSettings:
     """可插拔 Agent 接入（ACP 协议 / pi RPC 适配）。
 
@@ -89,6 +77,12 @@ class ACPSettings:
     env_name: str = ""  # 传给 Agent 的鉴权环境变量名（如 ANTHROPIC_AUTH_TOKEN）
     env_key: str = ""  # 环境变量值（API Key / Token）
     timeout: float = 300.0  # 单次 prompt 超时（秒）；Agent 执行工具可能较慢
+    instructions: str = ""
+    skills: list[str] = field(default_factory=list)
+    capabilities: list[str] = field(default_factory=list)
+    knowledge_dir: str = ""
+    mcp_servers: list[dict[str, Any]] = field(default_factory=list)
+    plan_before_execute: bool = False
 
 
 @dataclass
@@ -114,7 +108,7 @@ class ConnectorSettings:
 @dataclass
 class Settings:
     host: str = "127.0.0.1"
-    port: int = 8320
+    port: int = 8318
     engine: str = "mock"  # mock | llm | acp（acp = 外部 Agent：pi / claude code / codex / hermes）
     # 发送模式：auto_send=False（默认）仅生成草稿，人工确认后发送；True 时自动发送（前端按钮可切）
     auto_send: bool = False
@@ -142,7 +136,6 @@ class Settings:
     static_dir: str = ""  # 前端构建产物目录；空 = 自动探测 ../frontend/dist，不存在则仅服务 API
     llm: LLMSettings = field(default_factory=LLMSettings)
     acp: ACPSettings = field(default_factory=ACPSettings)
-    jev: JEVSettings = field(default_factory=JEVSettings)
     wechat: ConnectorSettings = field(default_factory=ConnectorSettings)
     dingtalk: ConnectorSettings = field(default_factory=ConnectorSettings)
 
@@ -169,6 +162,69 @@ def _apply_connector(data: dict[str, Any], cs: ConnectorSettings) -> None:
         cs.allowed_contacts = [str(x) for x in data["allowed_contacts"]]
 
 
+PANEL_SETTINGS_FIELDS = {
+    "engine": ("engine",),
+    "group_trigger": ("group_trigger",),
+    "non_text_action": ("non_text_action",),
+    "debounce_seconds": ("debounce_seconds",),
+    **{f"acp_{key}": ("acp", key) for key in (
+        "mode", "command", "args", "cwd", "timeout", "env_name", "env_key",
+    )},
+}
+
+
+def panel_settings(settings: Settings) -> dict[str, Any]:
+    """设置面板的生效值，用于 SQLite 保存。"""
+    values = {}
+    for key, path in PANEL_SETTINGS_FIELDS.items():
+        value = settings
+        for part in path:
+            value = getattr(value, part)
+        values[key] = value
+    return values
+
+
+def apply_persisted_settings(settings: Settings, persisted: dict[str, Any]) -> Settings:
+    """恢复 SQLite 设置；环境变量仍拥有最高优先级。"""
+    from .models import ConfigUpdateRequest
+
+    # 仅接受白名单字段，不允许数据库覆盖监听地址、数据库路径或发送开关。
+    validated = ConfigUpdateRequest.model_validate({
+        key: value for key, value in persisted.items() if key in PANEL_SETTINGS_FIELDS
+    }).model_dump(exclude_none=True, include=set(PANEL_SETTINGS_FIELDS))
+    choices = {
+        "engine": {"mock", "llm", "acp"},
+        "acp_mode": {"acp", "pi"},
+        "group_trigger": {"at-mention", "all", "listen-only"},
+        "non_text_action": {"placeholder", "skip"},
+    }
+    for key, allowed in choices.items():
+        if key in validated and validated[key] not in allowed:
+            raise ValueError(f"SQLite 配置项无效: {key}")
+    if "acp_timeout" in validated and not 5 <= validated["acp_timeout"] <= 3600:
+        raise ValueError("SQLite 配置项无效: acp_timeout")
+    if "debounce_seconds" in validated and not 0 <= validated["debounce_seconds"] < float("inf"):
+        raise ValueError("SQLite 配置项无效: debounce_seconds")
+    for key, value in validated.items():
+        path = PANEL_SETTINGS_FIELDS[key]
+        target = settings
+        for part in path[:-1]:
+            target = getattr(target, part)
+        setattr(target, path[-1], value)
+
+    env = os.environ.get
+    settings.engine = env(_ENV_PREFIX + "ENGINE", settings.engine)
+    settings.group_trigger = env(_ENV_PREFIX + "GROUP_TRIGGER", settings.group_trigger)
+    settings.non_text_action = env(_ENV_PREFIX + "NON_TEXT_ACTION", settings.non_text_action)
+    debounce = env(_ENV_PREFIX + "DEBOUNCE_SECONDS")
+    if debounce is not None:
+        try:
+            settings.debounce_seconds = max(0.0, float(debounce))
+        except ValueError:
+            pass
+    return settings
+
+
 def load_settings(config_path: str | None = None) -> Settings:
     s = Settings()
     explicit_path = config_path or os.environ.get(_ENV_PREFIX + "CONFIG_FILE")
@@ -191,10 +247,6 @@ def load_settings(config_path: str | None = None) -> Settings:
         for key in ("mode", "command", "args", "cwd", "env_name", "env_key", "timeout"):
             if key in data["acp"]:
                 setattr(s.acp, key, data["acp"][key])
-    if isinstance(data.get("jev"), dict):
-        for key in ("enabled", "provider", "api_key", "base_url", "model", "rewrite_on_fail"):
-            if key in data["jev"]:
-                setattr(s.jev, key, data["jev"][key])
     for name in ("wechat", "dingtalk"):
         if isinstance(data.get(name), dict):
             _apply_connector(data[name], getattr(s, name))
@@ -216,7 +268,6 @@ def load_settings(config_path: str | None = None) -> Settings:
     # YAML 1.1 会把 off/on 解析为布尔值，归一化回字符串
     if isinstance(s.alert_channel, bool):
         s.alert_channel = "on" if s.alert_channel else "off"
-
     # ---- 环境变量覆盖 ----
     env = os.environ.get
     s.engine = env(_ENV_PREFIX + "ENGINE", s.engine)
@@ -268,13 +319,6 @@ def load_settings(config_path: str | None = None) -> Settings:
     s.embedding.base_url = env(_ENV_PREFIX + "EMBEDDING_BASE_URL", s.embedding.base_url)
     s.embedding.api_key = env(_ENV_PREFIX + "EMBEDDING_API_KEY", s.embedding.api_key)
     s.embedding.model = env(_ENV_PREFIX + "EMBEDDING_MODEL", s.embedding.model)
-
-    s.jev.enabled = _as_bool(env(_ENV_PREFIX + "JEV_ENABLED"), s.jev.enabled)
-    s.jev.provider = env(_ENV_PREFIX + "JEV_PROVIDER", s.jev.provider)
-    s.jev.api_key = env(_ENV_PREFIX + "JEV_API_KEY", s.jev.api_key) or env(
-        _ENV_PREFIX + "TYPESAFE_API_KEY", s.jev.api_key
-    )
-    s.jev.base_url = env(_ENV_PREFIX + "JEV_BASE_URL", s.jev.base_url)
 
     s.wechat.mode = env(_ENV_PREFIX + "WECHAT_MODE", s.wechat.mode)
     s.wechat.group_reply = env(_ENV_PREFIX + "WECHAT_GROUP_REPLY", s.wechat.group_reply)

@@ -43,9 +43,10 @@ class MockReplyGenerator(ReplyGenerator):
             ]
 
         chosen = candidates[0]
+        cands = [Candidate(content=c) for c in candidates]
         return GenerationResult(
             content=chosen,
-            candidates=[Candidate(content=c, passed=True) for c in candidates],
+            candidates=cands,
             meta={"engine": self.name, "rule": "keyword",
-                  "candidates": [Candidate(content=c, passed=True).to_dict() for c in candidates]},
+                  "candidates": [c.to_dict() for c in cands]},
         )

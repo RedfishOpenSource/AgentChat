@@ -3,7 +3,7 @@
 需求：生成回复先实现一个接口，后续可替换为 RAG 等复杂实现。
 当前提供两种实现：
 - MockReplyGenerator：基于规则的本地实现，用于开发与模拟测试
-- LLMReplyGenerator：DeepSeek 等 OpenAI 兼容接口实现，可选接 JEV 预判/复审
+- LLMReplyGenerator：DeepSeek 等 OpenAI 兼容接口实现
 """
 from __future__ import annotations
 
@@ -23,8 +23,6 @@ class Candidate:
 
     content: str
     score: float | None = None
-    passed: bool | None = None
-    reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -36,7 +34,6 @@ class GenerationResult:
 
     content: str
     candidates: list[Candidate] = field(default_factory=list)
-    blocked: bool = False  # True 表示被质量门禁拦截，不应发送
     meta: dict[str, Any] = field(default_factory=dict)
 
 

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api.routes import router
 from .alerts import AlertManager, build_notifier
-from .config import Settings, load_settings
+from .config import Settings, apply_persisted_settings, load_settings
 from .core.agent import AgentService
 from .engine import build_engine
 from .persistence import SqliteStore
@@ -21,6 +21,15 @@ from .security import IPAllowlistMiddleware
 from .store import EventBus, MessageStore
 
 logger = logging.getLogger("chatagent")
+
+
+async def _sync_prompts_on_startup(agent) -> None:
+    from .prompts_sync import sync_all_agent_profiles
+
+    try:
+        await sync_all_agent_profiles(agent)
+    except Exception as exc:  # noqa: BLE001 —— 同步失败不影响服务
+        logger.warning("[prompts-sync] 启动同步异常: %s", exc)
 
 
 class CacheAwareStaticFiles(StaticFiles):
@@ -67,6 +76,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
     _setup_logging(settings.log_file)
     db = SqliteStore(settings.db_path)
+    try:
+        settings = apply_persisted_settings(settings, db.get_settings())
+    except (TypeError, ValueError):
+        db.close()
+        raise
     store = MessageStore(max_size=settings.max_store, db=db)
     store.restore()  # 启动时恢复历史消息与未确认草稿
     bus = EventBus()
@@ -87,18 +101,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except ValueError as exc:
             logger.warning("Embedding 配置无效，语义检索未启用（仅词面检索）: %s", exc)
-    engine, jev = build_engine(settings, kb=kb)
+    engine = build_engine(settings, kb=kb)
     alert_manager = AlertManager(
         notifier=build_notifier(settings.alert_channel, settings.alert_dingtalk_chat_id,
                                 dws_bin=settings.dingtalk.dws_bin),
         min_interval=settings.alert_min_interval,
     )
-    agent = AgentService(settings=settings, store=store, bus=bus, engine=engine, jev=jev,
-                         alerts=alert_manager, kb=kb)
+    agent = AgentService(settings=settings, store=store, bus=bus, engine=engine,
+                         alerts=alert_manager, kb=kb, db=db)
     agent.setup_connectors()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # 记忆与自进化：启动时为各 Agent 工作空间拉取最新提示词语案例（后台执行，失败不阻断）
+        asyncio.create_task(_sync_prompts_on_startup(agent))
         await agent.start_all()
         yield
         await agent.shutdown()
@@ -129,6 +145,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "type": "hello",
                     "connectors": {p.value: c.info() for p, c in agent.connectors.items()},
                     "engine": agent.engine.name,
+                    "processing": agent.processing_snapshot(),
                 }
             )
             while True:

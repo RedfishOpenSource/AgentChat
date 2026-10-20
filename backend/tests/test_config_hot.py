@@ -85,13 +85,11 @@ def test_persist_writes_yaml(hot_client):
 
 def test_nested_settings_and_auto_send_persist_roundtrip(hot_client):
     r = hot_client.put("/api/config", json={
-        "jev_enabled": True, "jev_provider": "mock", "llm_max_retries": 4,
+        "llm_max_retries": 4,
         "llm_rate_limit_per_chat": 6, "auto_send": True, "persist": True,
     })
     assert r.status_code == 200
     loaded = load_settings(hot_client.app.state.settings.config_file)
-    assert loaded.jev.enabled is True
-    assert loaded.jev.provider == "mock"
     assert loaded.llm.max_retries == 4
     assert loaded.llm_rate_limit_per_chat == 6
     assert loaded.auto_send is True
@@ -119,6 +117,48 @@ def test_llm_style_persist_writes_yaml(hot_client):
     data = yaml.safe_load(Path(cfg_file).read_text(encoding="utf-8"))
     assert data["llm"]["style"] == "casual"
     assert load_settings(cfg_file).llm.style == "casual"
+
+
+def test_panel_settings_persist_in_sqlite_across_restart(tmp_path):
+    db_path = str(tmp_path / "settings.db")
+    first = TestClient(create_app(make_settings(db_path=db_path)), client=("127.0.0.1", 12345))
+    with first as client:
+        response = client.put("/api/config", json={
+            "engine": "acp",
+            "acp_mode": "acp",
+            "acp_command": "pi-acp",
+            "acp_args": "--quiet",
+            "acp_cwd": str(tmp_path),
+            "acp_timeout": 240,
+            "group_trigger": "all",
+            "non_text_action": "skip",
+            "debounce_seconds": 2.5,
+            "acp_env_name": "TEST_AGENT_KEY",
+            "acp_env_key": "test-only-credential",
+            "persist_to_db": True,
+        })
+        assert response.status_code == 200
+        assert response.json()["persisted"] is True
+        assert first.app.state.db.get_settings()["acp_env_key"] == "test-only-credential"
+        # 部分更新不应删除先前保存的工作空间和 Agent。
+        assert client.put("/api/config", json={
+            "debounce_seconds": 0, "persist_to_db": True,
+        }).status_code == 200
+
+    second = TestClient(create_app(make_settings(db_path=db_path)), client=("127.0.0.1", 12345))
+    with second as client:
+        config = client.get("/api/config").json()
+        assert config["engine"] == "acp"
+        assert config["acp"]["command"] == "pi-acp"
+        assert config["acp"]["args"] == "--quiet"
+        assert config["acp"]["cwd"] == str(tmp_path)
+        assert config["acp"]["timeout"] == 240
+        assert config["group_trigger"] == "all"
+        assert config["non_text_action"] == "skip"
+        assert config["debounce_seconds"] == 0
+        assert config["acp"]["env_name"] == "TEST_AGENT_KEY"
+        assert config["acp"]["env_key"] == "test-only-credential"
+        assert config["auto_send"] is False
 
 
 def test_persist_requires_config_file():

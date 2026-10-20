@@ -26,10 +26,12 @@ def make(platform=Platform.WECHAT, chat_id="c1", content="你好", **kw):
 
 
 @pytest.mark.asyncio
-async def test_empty_whitelist_allows_all():
-    agent = build_agent(make_settings())  # 默认空白名单
+async def test_empty_whitelist_denies_all():
+    """默认不监听任何人：空名单时消息被忽略。"""
+    agent = build_agent(make_settings(allowed_contacts=[]))
     await agent.ingest(make(chat_id="任何人"))
-    assert len(agent.store.list_messages(chat_id="任何人", direction="out")) == 1
+    msgs = agent.store.list_messages(chat_id="任何人")
+    assert msgs and msgs[0].status == STATUS_IGNORED
     await agent.stop_all()
 
 
@@ -41,7 +43,7 @@ async def test_whitelist_blocks_unlisted_chat():
     assert agent.store.list_messages(chat_id="陌生会话", direction="out") == []
     m = agent.store.list_messages(chat_id="陌生会话")[0]
     assert m.status == STATUS_IGNORED
-    assert "白名单" in m.meta["ignore_reason"]
+    assert "未选择监听" in m.meta["ignore_reason"]
     # 在名单 → 正常生成
     await agent.ingest(make(chat_id="张三会话"))
     assert len(agent.store.list_messages(chat_id="张三会话", direction="out")) == 1
@@ -70,11 +72,11 @@ async def test_whitelist_wildcard():
 # ---------------- REST API 运行时更新 ----------------
 def test_contacts_api_runtime_update():
     with TestClient(create_app(make_settings(allowed_contacts=[])), client=("127.0.0.1", 12345)) as client:
-        # 默认空 → 消息正常生成
+        # 默认空名单 → 不监听，消息被忽略
         r = client.post("/api/simulate", json={"platform": "dingtalk", "chat_id": "wl1", "content": "hi"})
-        assert r.json()["reply"] is not None
+        assert r.json()["reply"] is None
 
-        # 设置白名单（不含 wl1）→ 新消息被忽略
+    # 设置白名单（不含 wl1）→ 新消息被忽略
         client.put("/api/contacts", json={"allowed_contacts": ["其他会话"]})
         assert client.get("/api/contacts").json()["allowed_contacts"] == ["其他会话"]
         r = client.post("/api/simulate", json={"platform": "dingtalk", "chat_id": "wl1", "content": "hi2"})

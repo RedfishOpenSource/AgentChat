@@ -61,6 +61,19 @@ def _configure(hot_client, payload: dict):
     return r
 
 
+def test_windows_command_wrapper_uses_cmd_exe(monkeypatch):
+    import os
+    import app.engine.acp as acp
+
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    monkeypatch.setattr(acp.shutil, "which", lambda command: r"C:\Agent Tools\pi-acp.CMD")
+    argv = acp._command_argv("pi-acp", ["--mode", "rpc"])
+    assert argv[:4] == [r"C:\Windows\System32\cmd.exe", "/d", "/s", "/c"]
+    assert '"C:\\Agent Tools\\pi-acp.CMD"' in argv[4]
+    assert argv[4].endswith("--mode rpc")
+
+
 def test_acp_engine_session_per_contact(hot_client, tmp_path):
     """ACP 模式：握手 → 每个联系人独立会话，同一联系人复用会话。"""
     script = tmp_path / "fake_acp_agent.py"
@@ -136,19 +149,18 @@ def test_agents_endpoint_lists_builtin_with_availability(hot_client, monkeypatch
     data = hot_client.get("/api/agents").json()
     agents = {a["id"]: a for a in data["agents"]}
 
-    assert set(agents) == {"pi", "claude-code", "codex", "hermes", "pi-rpc"}
+    assert set(agents) == {"pi", "claude-code", "codex", "hermes"}
     assert agents["pi"]["available"] is True and agents["pi"]["command"] == "pi-acp"
     assert agents["claude-code"]["available"] is True
     assert agents["codex"]["available"] is True
     assert agents["hermes"]["available"] is False  # 未安装 → 标记不可用，但仍在下拉中可见
-    assert agents["pi-rpc"]["mode"] == "pi"
 
 
 def test_agents_endpoint_real_path_detection(hot_client):
     """不做 mock：端点结构完整、available 为布尔（本机环境决定具体值）。"""
     data = hot_client.get("/api/agents").json()
     agents = data["agents"]
-    assert len(agents) >= 4
+    assert len(agents) == 4
     for a in agents:
         assert isinstance(a["available"], bool)
         assert a["command"] and a["name"] and a["mode"] in ("acp", "pi")

@@ -1,8 +1,6 @@
 """基于 OpenAI 兼容 Chat Completions 的回复实现（默认 DeepSeek）。
 
-流程参考 jev-chat 项目：
-  JEV 预判(可选) → LLM 生成候选 → JEV 复审排序(可选)
-  → 全部不合格时重写一次 → 仍不合格则拦截(blocked)
+流程：LLM 生成候选（可多候选）→ 选择第一条返回（人工审核兜底质量）。
 """
 from __future__ import annotations
 
@@ -18,7 +16,6 @@ from ..config import LLMSettings
 from ..models import ChatMessage
 from ..rag import Chunk, KnowledgeBase
 from .base import Candidate, GenerationResult, ReplyGenerator
-from .jev import JEVPrefilter, JEVJudge
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +41,10 @@ class LLMReplyGenerator(ReplyGenerator):
     def __init__(
         self,
         cfg: LLMSettings,
-        jev: JEVJudge | None = None,
-        rewrite_on_fail: bool = True,
         transport: httpx.AsyncBaseTransport | None = None,
         kb: KnowledgeBase | None = None,
     ) -> None:
         self.cfg = cfg
-        self.jev = jev
-        self.rewrite_on_fail = rewrite_on_fail
         self.kb = kb  # RAG 知识库（可选）：检索结果注入用户提示词
         self._client = httpx.AsyncClient(timeout=cfg.timeout, transport=transport)
 
@@ -118,8 +111,6 @@ class LLMReplyGenerator(ReplyGenerator):
         self,
         message: ChatMessage,
         history: Sequence[ChatMessage],
-        assessment: JEVPrefilter | None,
-        feedback: str = "",
         rag_hits: list[tuple[float, Chunk]] | None = None,
     ) -> str:
         lines = ["以下是最近的聊天记录（最后一条是需要回复的新消息）："]
@@ -127,21 +118,10 @@ class LLMReplyGenerator(ReplyGenerator):
             lines.append(f"{m.sender}: {m.content}")
         lines.append(f"{message.sender}: {message.content}")
 
-        if assessment:
-            lines += [
-                "",
-                "[JEV 结构化判断]",
-                f"风险等级: {assessment.risk_level}",
-                f"真实意图: {assessment.intent}",
-                f"对方需要: {assessment.user_need}",
-                f"建议行动: {assessment.suggested_action}",
-            ]
         if rag_hits:
             lines += ["", "[知识库参考资料]（可参考以下内容回复；资料中没有的信息不要编造）"]
             for _, chunk in rag_hits:
                 lines.append(f"- {chunk.text}")
-        if feedback:
-            lines += ["", f"[注意] 上一轮候选未通过质量复审（原因：{feedback}），请重新生成更合适的回复。"]
 
         n = max(1, self.cfg.num_candidates)
         lines += [
@@ -191,93 +171,30 @@ class LLMReplyGenerator(ReplyGenerator):
         return items
 
     # ---------- 主流程 ----------
-    @staticmethod
-    def _pick_best(candidates: list[Candidate], review: Any) -> Candidate | None:
-        if review is None:
-            return candidates[0] if candidates else None
-        for i in review.ranking:
-            if 0 <= i < len(candidates) and candidates[i].passed:
-                return candidates[i]
-        for c in candidates:
-            if c.passed:
-                return c
-        return None
-
     async def generate(
         self, message: ChatMessage, history: Sequence[ChatMessage], kb: "KnowledgeBase | None" = None
     ) -> GenerationResult:
-        jev_on = bool(self.jev and self.jev.enabled)
-
-        # 1) JEV 预判（可选）
-        assessment: JEVPrefilter | None = None
-        if jev_on:
-            assessment = await self.jev.pre_judge(message, history)  # type: ignore[union-attr]
-
         # RAG 知识库检索（可选）：调用方按平台传入 kb（不传用构造时的默认库）
         kb = kb if kb is not None else self.kb
         rag_hits = await kb.search_hybrid(message.content) if kb is not None else []
 
         messages = [
             {"role": "system", "content": self._system_prompt()},
-            {"role": "user", "content": self._build_user_prompt(message, history, assessment, rag_hits=rag_hits)},
+            {"role": "user", "content": self._build_user_prompt(message, history, rag_hits=rag_hits)},
         ]
         raw = await self._chat_with_retry(messages)
         contents = self._parse_candidates(raw) or [raw.strip()]
         candidates = [Candidate(content=c) for c in contents]
 
-        blocked = False
         meta: dict[str, Any] = {
             "engine": self.name,
             "model": self.cfg.model,
-            "jev": jev_on,
-            "assessment": assessment.__dict__ if assessment else None,
         }
         if rag_hits:
             meta["rag"] = sorted({c.file for _, c in rag_hits})  # 引用的知识库文件
-
-        # 2) JEV 复审 + 排序（可选），不合格时重写一次
-        if jev_on and candidates:
-            review = await self.jev.review(message, candidates)  # type: ignore[union-attr]
-            if review:
-                for i, c in enumerate(candidates):
-                    if i < len(review.scores):
-                        c.score = review.scores[i]
-                    if i < len(review.passed):
-                        c.passed = review.passed[i]
-                    if i < len(review.reasons):
-                        c.reason = review.reasons[i]
-            best = self._pick_best(candidates, review)
-
-            if best is None and self.rewrite_on_fail:
-                reasons = "；".join(x for x in (review.reasons if review else []) if x) or "质量复审未通过"
-                meta["rewritten"] = True
-                messages[1]["content"] = self._build_user_prompt(
-                    message, history, assessment, feedback=reasons, rag_hits=rag_hits
-                )
-                raw2 = await self._chat_with_retry(messages, temperature=min(1.2, self.cfg.temperature + 0.2))
-                contents2 = self._parse_candidates(raw2) or [raw2.strip()]
-                candidates = [Candidate(content=c) for c in contents2]
-                review2 = await self.jev.review(message, candidates)  # type: ignore[union-attr]
-                if review2:
-                    for i, c in enumerate(candidates):
-                        if i < len(review2.scores):
-                            c.score = review2.scores[i]
-                        if i < len(review2.passed):
-                            c.passed = review2.passed[i]
-                        if i < len(review2.reasons):
-                            c.reason = review2.reasons[i]
-                best = self._pick_best(candidates, review2)
-
-            if best is None:  # 重写后仍全部不合格 → 拦截
-                blocked = True
-                best = candidates[0]
-        else:
-            best = candidates[0]
-
         meta["candidates"] = [c.to_dict() for c in candidates]
-        if blocked:
-            meta["blocked_reason"] = "JEV 复审未通过，已拦截（可人工确认后发送）"
-        return GenerationResult(content=best.content, candidates=candidates, blocked=blocked, meta=meta)
+        best = candidates[0] if candidates else Candidate(content="（未生成回复内容）")
+        return GenerationResult(content=best.content, candidates=candidates, meta=meta)
 
     async def aclose(self) -> None:
         await self._client.aclose()

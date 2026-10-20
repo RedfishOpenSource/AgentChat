@@ -9,7 +9,6 @@ import pytest
 from app.config import LLMSettings
 from app.engine import MockReplyGenerator
 from app.engine.base import Candidate
-from app.engine.jev import MockJEVJudge
 from app.engine.llm import LLMReplyGenerator, STYLE_PRESETS, _SYSTEM_PROMPT
 from app.models import ChatMessage, Platform
 
@@ -25,7 +24,6 @@ async def test_mock_engine_greeting():
     assert result.content
     assert "你好" in result.content
     assert len(result.candidates) >= 1
-    assert not result.blocked
 
 
 @pytest.mark.asyncio
@@ -62,7 +60,6 @@ async def test_llm_engine_json_candidates():
     result = await engine.generate(make_msg("在吗"), [])
     assert result.content == "好哒，没问题"
     assert [c.content for c in result.candidates] == ["好哒，没问题", "收到！"]
-    assert not result.blocked
     assert result.meta["engine"] == "llm"
     await engine.aclose()
 
@@ -78,27 +75,12 @@ async def test_llm_engine_line_fallback():
 
 
 @pytest.mark.asyncio
-async def test_llm_engine_with_jev_blocks_risky_reply():
-    """LLM 生成敏感内容（要求转账）→ Mock JEV 拦截 → blocked，且触发一次重写。"""
-    raw = json.dumps({"candidates": ["好的，请给我转账500元"]}, ensure_ascii=False)
-    cfg = LLMSettings(api_key="k", base_url="http://llm.test", num_candidates=1)
-    engine = LLMReplyGenerator(cfg, jev=MockJEVJudge(), rewrite_on_fail=True, transport=_llm(raw))
-    result = await engine.generate(make_msg("你好，帮我操作下"), [])
-    assert result.blocked is True
-    assert result.meta["jev"] is True
-    assert result.meta["rewritten"] is True
-    assert "blocked_reason" in result.meta
-    await engine.aclose()
-
-
-@pytest.mark.asyncio
-async def test_llm_engine_jev_passes_normal_reply():
+async def test_llm_engine_single_candidate():
     raw = json.dumps({"candidates": ["你好呀，很高兴认识你，请问有什么事吗？"]}, ensure_ascii=False)
     cfg = LLMSettings(api_key="k", base_url="http://llm.test", num_candidates=1)
-    engine = LLMReplyGenerator(cfg, jev=MockJEVJudge(), transport=_llm(raw))
+    engine = LLMReplyGenerator(cfg, transport=_llm(raw))
     result = await engine.generate(make_msg("你好"), [])
-    assert result.blocked is False
-    assert result.candidates[0].passed is True
+    assert result.content.startswith("你好呀")
     await engine.aclose()
 
 

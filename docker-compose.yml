@@ -3,7 +3,7 @@ services:
     build: .
     container_name: chatagent
     ports:
-      - "8320:8320"
+      - "8318:8318"
     volumes:
       - chatagent-data:/app/backend/data   # SQLite 与知识库向量缓存
       - chatagent-logs:/app/backend/logs   # 日志持久化
@@ -16,7 +16,7 @@ services:
       CHATAGENT_CONFIG_FILE: /app/backend/data/config.yaml
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8320/api/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8318/api/health')\""]
       interval: 30s
       timeout: 5s
       retries: 3

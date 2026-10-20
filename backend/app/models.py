@@ -48,7 +48,7 @@ STATUS_SENDING = "sending"  # 正在调用连接器
 STATUS_FAILED = "failed"  # 连接器明确拒绝/失败，可重试
 STATUS_UNKNOWN = "unknown"  # 超时或结果不确定，需核对平台后重试
 STATUS_REJECTED = "rejected"  # 人工驳回
-STATUS_BLOCKED = "blocked"  # JEV 质量门禁拦截，默认禁止发送
+STATUS_BLOCKED = "blocked"  # 质量门禁拦截，默认禁止发送（历史消息兼容）
 STATUS_IGNORED = "ignored"  # 按策略忽略（非文本/群聊未@等），不生成草稿
 
 
@@ -108,6 +108,70 @@ class ContactsRequest(BaseModel):
     allowed_contacts: list[str] = []
 
 
+class AgentProfileRequest(BaseModel):
+    id: Optional[str] = None
+    name: str
+    description: str = ""
+    instructions: str = ""
+    skills: list[str] = Field(default_factory=list)
+    engine: str = "pi"
+    command: str = ""
+    args: str = ""
+    workspace: str
+    capabilities: list[str] = Field(default_factory=list)
+    knowledge_dir: str = ""
+    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
+    plan_before_execute: bool = False
+    timeout: float = 300
+    sync_mode: str = Field(default="background", pattern=r"^(background|wait)$")
+
+
+class AgentMcpOpenRequest(BaseModel):
+    workspace: str
+
+
+class RegenerateRequest(BaseModel):
+    """补充说明后重新生成回复。"""
+
+    extra: str
+
+
+class SessionResetRequest(BaseModel):
+    """清空指定联系人的 Agent 会话。"""
+
+    platform: str
+    chat_id: str
+
+
+class ContactChatRequest(SessionResetRequest):
+    """操作员在消息页继续指定联系人的 AI 对话。"""
+
+    content: str = Field(min_length=1, max_length=20000)
+
+
+class AgentDebugRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=20000)
+    session_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class AgentAssignmentRequest(BaseModel):
+    platform: str
+    chat_id: str
+    agent_id: str
+
+
+class ContactConfigRequest(BaseModel):
+    """联系人监听配置（选中监听人时指定）。"""
+
+    platform: str
+    chat_id: str
+    timeout: float = 300
+    group_trigger: str = "at-mention"
+    non_text_action: str = "placeholder"
+    debounce_seconds: float = 3.0
+
+
+
 class ConfigUpdateRequest(BaseModel):
     """配置热更新（部分更新；persist=True 时同步写回配置文件）。"""
 
@@ -122,9 +186,6 @@ class ConfigUpdateRequest(BaseModel):
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
     llm_api_key: Optional[str] = None
-    jev_enabled: Optional[bool] = None
-    jev_provider: Optional[str] = None  # mock | typesafe
-    jev_api_key: Optional[str] = None
     num_candidates: Optional[int] = None
     temperature: Optional[float] = None
     llm_max_retries: Optional[int] = None
@@ -143,4 +204,5 @@ class ConfigUpdateRequest(BaseModel):
     dingtalk_knowledge_dir: Optional[str] = None  # 钉钉独立知识库目录（空 = 用全局）
     embedding_enabled: Optional[bool] = None  # RAG 语义检索开关（需已配置 embedding.model）
     auto_send: Optional[bool] = None  # 自动发送开关（默认人工确认）
-    persist: bool = False
+    persist: bool = False  # legacy config.yaml persistence
+    persist_to_db: bool = False  # 设置面板保存到 SQLite，与 persist 互斥

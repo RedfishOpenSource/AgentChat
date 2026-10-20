@@ -1,4 +1,4 @@
-"""SQLite 持久层：消息落盘 + 审计日志。
+"""SQLite 持久层：消息落盘、审计日志和设置面板配置。
 
 设计：
 - 单连接 + 线程锁（当前管线全部在事件循环线程内写，锁仅作保险）
@@ -44,6 +44,30 @@ CREATE TABLE IF NOT EXISTS audit_log (
     message_id  TEXT NOT NULL,
     detail      TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_profiles (
+    id          TEXT PRIMARY KEY,
+    data        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_assignments (
+    platform    TEXT NOT NULL,
+    chat_id     TEXT NOT NULL,
+    agent_id    TEXT NOT NULL,
+    PRIMARY KEY (platform, chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS contact_configs (
+    platform    TEXT NOT NULL,
+    chat_id     TEXT NOT NULL,
+    data        TEXT NOT NULL,
+    PRIMARY KEY (platform, chat_id)
+);
 """
 
 
@@ -66,6 +90,99 @@ class SqliteStore:
                     self._conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {declaration}")
             self._conn.commit()
         logger.info("[db] SQLite 已就绪: %s", db_path)
+
+    # ---------- persistent settings ----------
+    def get_settings(self) -> dict[str, Any]:
+        with self._lock:
+            rows = self._conn.execute("SELECT key, value FROM app_settings").fetchall()
+        settings: dict[str, Any] = {}
+        for row in rows:
+            try:
+                settings[row["key"]] = json.loads(row["value"])
+            except json.JSONDecodeError:
+                logger.warning("[db] 忽略无效的持久化配置项: %s", row["key"])
+        return settings
+
+    def save_settings(self, settings: dict[str, Any]) -> None:
+        with self._lock, self._conn:
+            self._conn.executemany(
+                "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [(key, json.dumps(value, ensure_ascii=False)) for key, value in settings.items()],
+            )
+
+    # ---------- agent profiles and contact assignments ----------
+    def list_agent_profiles(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT data FROM agent_profiles ORDER BY rowid").fetchall()
+        profiles = []
+        for row in rows:
+            try:
+                profiles.append(json.loads(row["data"]))
+            except json.JSONDecodeError:
+                logger.warning("[db] 忽略损坏的 Agent 配置")
+        return profiles
+
+    def save_agent_profile(self, profile: dict[str, Any]) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO agent_profiles (id, data) VALUES (?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+                (profile["id"], json.dumps(profile, ensure_ascii=False)),
+            )
+
+    def delete_agent_profile(self, agent_id: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM agent_profiles WHERE id = ?", (agent_id,))
+            self._conn.execute("DELETE FROM agent_assignments WHERE agent_id = ?", (agent_id,))
+
+    def list_agent_assignments(self) -> list[dict[str, str]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT platform, chat_id, agent_id FROM agent_assignments ORDER BY platform, chat_id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def assign_agent(self, platform: str, chat_id: str, agent_id: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO agent_assignments (platform, chat_id, agent_id) VALUES (?, ?, ?) "
+                "ON CONFLICT(platform, chat_id) DO UPDATE SET agent_id = excluded.agent_id",
+                (platform, chat_id, agent_id),
+            )
+
+    def unassign_agent(self, platform: str, chat_id: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM agent_assignments WHERE platform = ? AND chat_id = ?", (platform, chat_id)
+            )
+
+    # ---------- per-contact listen settings ----------
+    def list_contact_configs(self) -> dict[str, dict[str, Any]]:
+        """返回 {(platform, chat_id): config} 形式的联系人监听配置。"""
+        with self._lock:
+            rows = self._conn.execute("SELECT platform, chat_id, data FROM contact_configs").fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                out[(row["platform"], row["chat_id"])] = json.loads(row["data"])
+            except json.JSONDecodeError:
+                logger.warning("[db] 忽略损坏的联系人监听配置: %s/%s", row["platform"], row["chat_id"])
+        return out
+
+    def save_contact_config(self, platform: str, chat_id: str, config: dict[str, Any]) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO contact_configs (platform, chat_id, data) VALUES (?, ?, ?) "
+                "ON CONFLICT(platform, chat_id) DO UPDATE SET data = excluded.data",
+                (platform, chat_id, json.dumps(config, ensure_ascii=False)),
+            )
+
+    def delete_contact_config(self, platform: str, chat_id: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM contact_configs WHERE platform = ? AND chat_id = ?", (platform, chat_id)
+            )
 
     # ---------- messages ----------
     def upsert_message(self, m: ChatMessage) -> None:
