@@ -77,6 +77,10 @@ def test_reset_acp_session_starts_fresh(tmp_path):
         r = client.post("/api/agent-sessions/reset",
                         json={"platform": "wechat", "chat_id": "c1"})
         assert r.status_code == 200 and r.json()["reset"] is True
+        assert r.json()["deleted"] >= 2  # 页面与数据库记录一并删除
+        agent = client.app.state.agent
+        assert agent.store.list_messages(platform="wechat", chat_id="c1") == []
+        assert agent.db.list_messages(platform="wechat", chat_id="c1") == []
         assert "sess-2" in _simulate(client, "c1")  # 重置后开新会话
 
 

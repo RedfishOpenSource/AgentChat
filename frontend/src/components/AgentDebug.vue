@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api } from '../api'
 
 const props = defineProps({
@@ -7,13 +7,14 @@ const props = defineProps({
   messages: { type: Array, default: () => [] },
   processing: { type: Object, default: () => ({}) },
   connected: { type: Boolean, default: true },
+  initialSession: { type: String, default: '' }, // 非空则打开指定会话（如初始化问询 init）
 })
 const emit = defineEmits(['close', 'message'])
 const storageKey = `chatagent:debug:${props.profile.id}`
 function readSession() {
   try { return sessionStorage.getItem(storageKey) || crypto.randomUUID() } catch { return crypto.randomUUID() }
 }
-const sessionId = ref(readSession())
+const sessionId = ref(props.initialSession || readSession())
 function saveSession() { try { sessionStorage.setItem(storageKey, sessionId.value) } catch {} }
 saveSession()
 const chatId = computed(() => `debug:${props.profile.id}:${sessionId.value}`)
@@ -24,7 +25,13 @@ const history = ref([])
 const bodyEl = ref(null)
 const now = ref(Date.now())
 const ticker = setInterval(() => { now.value = Date.now() }, 1000)
-onUnmounted(() => clearInterval(ticker))
+const fullscreen = ref(false)
+function toggleFullscreen() { fullscreen.value = !fullscreen.value; scroll() }
+function onKeydown(event) {
+  if (event.key === 'Escape' && fullscreen.value) { event.preventDefault(); fullscreen.value = false }
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onUnmounted(() => { window.removeEventListener('keydown', onKeydown); clearInterval(ticker) })
 const messages = computed(() => {
   const byId = new Map([...history.value, ...props.messages].filter(m => m.chat_id === chatId.value).map(m => [m.id, m]))
   return [...byId.values()].sort((a, b) => a.ts - b.ts)
@@ -69,14 +76,18 @@ function onKey(event) {
 
 <template>
   <Teleport to="body">
-    <div class="debug-mask" @click.self="emit('close')">
-      <section class="debug-dialog" role="dialog" aria-modal="true" aria-label="Agent 调试">
+    <div class="debug-mask" :class="{ 'is-fullscreen': fullscreen }" @click.self="emit('close')">
+      <section class="debug-dialog" :class="{ fullscreen }" role="dialog" aria-modal="true" aria-label="Agent 调试">
         <header class="debug-head">
           <strong>调试 · {{ profile.name }}</strong>
           <button :disabled="busy" @click="newSession">新建会话</button>
+          <button class="fs-toggle" :class="{ on: fullscreen }" :title="fullscreen ? '退出全屏（Esc）' : '进入全屏'" @click="toggleFullscreen">
+            {{ fullscreen ? '退出全屏' : '全屏' }}
+          </button>
           <button aria-label="关闭调试" @click="emit('close')">✕</button>
         </header>
         <p class="debug-note">使用该 Agent 当前保存的配置、工作空间与 Skills。此处为独立调试对话。</p>
+        <p v-if="sessionId === 'init'" class="debug-init-note">初始化确认：以下是 Agent 初始化后需要你确认的问题，请逐条回复；确认完成后可「新建会话」进入常规调试。</p>
         <div ref="bodyEl" class="debug-history">
           <p v-if="!messages.length && !busy" class="debug-empty">输入问题，开始调试 {{ profile.name }}</p>
           <article v-for="m in messages" :key="m.id" class="debug-message" :class="m.direction">
@@ -101,7 +112,7 @@ function onKey(event) {
         </div>
         <p v-if="error" class="debug-error" role="alert">{{ error }}</p>
         <form class="debug-composer" @submit.prevent="send">
-          <textarea v-model="text" aria-label="调试消息" rows="3" maxlength="20000" :disabled="busy" placeholder="输入问题，调试该 Agent…" @keydown="onKey"></textarea>
+          <textarea v-model="text" aria-label="调试消息" rows="3" maxlength="20000" :disabled="busy" :placeholder="sessionId === 'init' ? '逐条回复需要确认的内容…' : '输入问题，调试该 Agent…'" @keydown="onKey"></textarea>
           <footer><span>Enter 发送 · Shift + Enter 换行</span><button class="primary" :disabled="busy || !text.trim()">{{ busy ? 'AI 处理中…' : '发送' }}</button></footer>
         </form>
       </section>
@@ -111,11 +122,15 @@ function onKey(event) {
 
 <style scoped>
 .debug-mask { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(4, 7, 10, .7); }
+.debug-mask.is-fullscreen { padding: 0; background: var(--bg); }
 .debug-dialog { width: min(900px, 96vw); height: min(800px, 90dvh); min-height: 350px; display: flex; flex-direction: column; gap: 10px; padding: 16px; background: var(--panel); border: 1px solid var(--border); border-radius: 9px; box-shadow: var(--shadow); }
+.debug-dialog.fullscreen { width: 100vw; height: 100dvh; max-width: none; border-radius: 0; border: none; }
 .debug-head { display: flex; align-items: center; gap: 10px; }
 .debug-head strong { flex: 1; color: #e2ecef; font-size: 14px; }
 .debug-head button { min-height: 28px; padding: 4px 9px; font-size: 11px; }
+.fs-toggle.on { color: var(--accent-strong); border: 1px solid rgba(85, 184, 200, .45); }
 .debug-note { margin: 0; color: var(--text-muted); font-size: 11px; }
+.debug-init-note { margin: 0; padding: 8px 10px; color: var(--accent-strong); font-size: 12px; border: 1px dashed rgba(85, 184, 200, .4); border-radius: 6px; }
 .debug-history { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg); }
 .debug-empty { margin: auto; color: var(--text-dim); font-size: 13px; }
 .debug-message { width: fit-content; max-width: 90%; padding: 10px 12px; background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 6px; }

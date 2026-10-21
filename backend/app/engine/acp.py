@@ -97,6 +97,7 @@ class ACPAgentGenerator(ReplyGenerator):
         self._notify_session: str | None = None
         self._sessions: dict[tuple[str, str], str] = {}
         self._pi_resets: dict[tuple[str, str], str] = {}
+        self._notify_retries = 0
         self._next_id = 0
 
     # ---------- 公共 ----------
@@ -224,6 +225,8 @@ class ACPAgentGenerator(ReplyGenerator):
                         if content.get("type") == "text":
                             text = str(content.get("text") or "")
                             if (upd.get("_meta") or {}).get("piAcp", {}).get("notify") or is_pi_notification(text):
+                                if text.startswith("Retrying (attempt"):
+                                    self._notify_retries += 1
                                 _progress(self._notify_progress, "thinking", detail="Agent 返回运行状态，正在继续处理")
                                 continue
                             self._notify_chunks.append(text)
@@ -325,6 +328,7 @@ class ACPAgentGenerator(ReplyGenerator):
                 self._sessions[key] = sid
                 logger.info("[acp] 新建 Agent 会话 %s -> %s", key, sid)
             chunks: list[str] = []
+            self._notify_retries = 0
             _progress(on_progress, "thinking", detail="问题已提交，等待 Agent 响应")
             try:
                 res = await self._acp_request(
@@ -339,6 +343,11 @@ class ACPAgentGenerator(ReplyGenerator):
             if "error" in res:
                 raise ACPAgentError(f"Agent prompt 失败: {res['error']}")
             content = clean_agent_reply("".join(chunks))
+            if not content and self._notify_retries:
+                raise ACPAgentError(
+                    f"Agent 模型连续 {self._notify_retries} 次调用失败（限流或超时），重试后仍无响应；"
+                    "请稍后重试，或在 pi 中切换可用模型"
+                )
             meta = {"engine": "acp", "mode": "acp", "agent": self.cfg.command.strip(),
                     "session": sid, "stop_reason": (res.get("result") or {}).get("stopReason")}
             logger.info("[acp] Agent 回复 %s/%s: %s", key[0], key[1], content[:60])

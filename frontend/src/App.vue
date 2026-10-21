@@ -57,9 +57,15 @@ function handleEvent(ev) {
     if (ev.state?.message_id) processing.value[ev.state.message_id] = ev.state
   } else if (ev.type === 'status') {
     if (status.value) status.value.connectors = ev.connectors
+  } else if (ev.type === 'chat_cleared') {
+    clearChat(ev)
   } else if (ev.type === 'error') {
     toast(ev.detail || '发生错误')
   }
+}
+
+function clearChat({ platform, chat_id }) {
+  messages.value = messages.value.filter((m) => !(m.platform === platform && m.chat_id === chat_id))
 }
 
 async function refreshStatus() {
@@ -222,7 +228,7 @@ onUnmounted(() => {
     </aside>
 
     <main class="main">
-      <ChatStream :messages="messages" :processing="processing" :connected="wsConnected" :contacts="status?.allowed_contacts || {}" @toast="toast" @message="upsert" :loading-older="loadingOlder" :has-older="hasOlderMessages" @load-older="loadOlderMessages" @action="onAction" @select-candidate="onSelectCandidate" @regenerate="onRegenerate" />
+      <ChatStream :messages="messages" :processing="processing" :connected="wsConnected" :contacts="status?.allowed_contacts || {}" @toast="toast" @message="upsert" :loading-older="loadingOlder" :has-older="hasOlderMessages" @load-older="loadOlderMessages" @action="onAction" @select-candidate="onSelectCandidate" @regenerate="onRegenerate" @cleared-chat="clearChat" />
     </main>
 
     <transition name="fade">

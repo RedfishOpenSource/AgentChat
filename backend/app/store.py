@@ -93,6 +93,20 @@ class MessageStore:
         items = [m for m in self._messages if m.platform.value == p and m.chat_id == chat_id]
         return items[-limit:]
 
+    def remove_chat(self, platform: Platform | str, chat_id: str) -> int:
+        """删除某会话的全部消息（内存窗口 + 数据库），返回数据库删除条数。"""
+        p = platform.value if isinstance(platform, Platform) else str(platform)
+        before = len(self._messages)
+        kept = deque(
+            (m for m in self._messages if not (m.platform.value == p and m.chat_id == chat_id)),
+            maxlen=self._messages.maxlen,
+        )
+        self._messages = kept
+        self._index = {m.id: m for m in kept}
+        if self._db is not None:
+            return self._db.delete_chat_messages(p, chat_id)
+        return before - len(kept)
+
     def list_messages(
         self,
         platform: str | None = None,

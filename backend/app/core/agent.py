@@ -80,6 +80,7 @@ class AgentService:
         self.contact_configs: dict[tuple[str, str], dict] = {
             k: v for k, v in (db.list_contact_configs().items() if db else {})
         }
+        self.prune_removed_contacts()
         # 每个连接器可配置独立知识库（connector.knowledge_dir）；未配置时回退全局 self.kb
         self.kbs: dict[Platform, KnowledgeBase] = {}
         for platform in (Platform.WECHAT, Platform.DINGTALK):
@@ -262,8 +263,8 @@ class AgentService:
         await self._schedule(stored)
         return stored
 
-    def reset_contact_session(self, platform: Platform, chat_id: str) -> bool:
-        """持久化新上下文分界，切断所有引擎会话，保留旧记录供审计。"""
+    def reset_contact_session(self, platform: Platform, chat_id: str) -> int:
+        """清空并删除该联系人的全部聊天记录（页面与数据库），开启全新 Agent 会话。"""
         if self.contact_processing(platform, chat_id):
             raise ValueError("该对话正在处理中，请等待完成后再清空会话")
         key = (platform.value, chat_id)
@@ -277,14 +278,10 @@ class AgentService:
             if fn is not None:
                 fn(platform.value, chat_id)
             self._apply_session_token(engine, platform, chat_id)
-        marker = ChatMessage(
-            platform=platform, chat_id=chat_id, sender="系统", content="会话已清空，后续消息使用新的上下文",
-            status=STATUS_IGNORED, msg_type="system",
-            meta={"session_reset": True, "session_token": token, "reset_at": reset_at},
-        )
-        self.store.add(marker)
-        self.bus.publish({"type": "message", "message": marker.model_dump(mode="json")})
-        return True
+        deleted = self.store.remove_chat(platform, chat_id)
+        self.bus.publish({"type": "chat_cleared", "platform": platform.value,
+                          "chat_id": chat_id, "deleted": deleted})
+        return deleted
 
     def _apply_session_token(self, engine, platform: Platform, chat_id: str) -> None:
         boundary = self.session_resets.get((platform.value, chat_id))
@@ -414,6 +411,20 @@ class AgentService:
         if self.db is not None:
             self.db.delete_contact_config(platform, chat_id)
         self.contact_configs.pop((platform, chat_id), None)
+
+    def prune_removed_contacts(self) -> None:
+        """删除已移出监听名单的绑定及配置，也修复旧版本遗留的数据。"""
+        for platform in (Platform.WECHAT, Platform.DINGTALK):
+            allowed = set(self.effective_contacts(platform))
+            if "*" in allowed:
+                continue
+            keys = set(self.agent_assignments) | set(self.contact_configs)
+            for p, chat_id in keys:
+                if p == platform.value and chat_id not in allowed:
+                    if self.db is not None:
+                        self.db.remove_contact(p, chat_id)
+                    self.agent_assignments.pop((p, chat_id), None)
+                    self.contact_configs.pop((p, chat_id), None)
 
     def effective_contacts(self, platform: Platform) -> list[str]:
         """平台生效白名单：连接器独立名单优先，未配置时回退全局名单（空 = 允许全部）。"""
@@ -970,6 +981,8 @@ class AgentService:
                 cs = getattr(s, platform.value)
                 cs.allowed_contacts = [str(x).strip() for x in updates[key] if str(x).strip()]
                 changed.append(key)
+        if any(key in changed for key in ("allowed_contacts", "wechat_allowed_contacts", "dingtalk_allowed_contacts")):
+            self.prune_removed_contacts()
         if updates.get("auto_send") is not None:
             s.auto_send = bool(updates["auto_send"])
             changed.append("auto_send")

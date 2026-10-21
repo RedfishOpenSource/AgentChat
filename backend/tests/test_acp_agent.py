@@ -54,6 +54,35 @@ for line in sys.stdin:
                           "success": True, "data": {"text": f"[{sid}] pi-echo"}}), flush=True)
 '''
 
+FAKE_ACP_RETRY_EMPTY = r'''
+import json, sys
+sessions = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    if msg.get("method") == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
+                          "result": {"protocolVersion": 1, "agentCapabilities": {}}}), flush=True)
+    elif msg.get("method") == "session/new":
+        sessions += 1
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
+                          "result": {"sessionId": f"sess-{sessions}"}}), flush=True)
+    elif msg.get("method") == "session/prompt":
+        sid = msg["params"]["sessionId"]
+        for n in (1, 2, 3):
+            print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": sid,
+                "update": {"sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": f"Retrying (attempt {n}/3, waiting {2*n}s)..."}}}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": sid,
+            "update": {"sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "Retry finished, resuming."}}}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"stopReason": "end_turn"}}), flush=True)
+'''
+
 
 def _configure(hot_client, payload: dict):
     r = hot_client.put("/api/config", json=payload)
@@ -164,3 +193,21 @@ def test_agents_endpoint_real_path_detection(hot_client):
     for a in agents:
         assert isinstance(a["available"], bool)
         assert a["command"] and a["name"] and a["mode"] in ("acp", "pi")
+
+
+@pytest.mark.asyncio
+async def test_acp_empty_after_retries_raises_clear_error(tmp_path):
+    """模型连续重试后仍无正文：明确报错，而不是沉默的「未返回文本内容」。"""
+    from app.config import ACPSettings
+    from app.engine.acp import ACPAgentError, ACPAgentGenerator
+    from app.models import ChatMessage, Platform
+
+    script = tmp_path / "fake_retry_agent.py"
+    script.write_text(FAKE_ACP_RETRY_EMPTY, encoding="utf-8")
+    engine = ACPAgentGenerator(ACPSettings(mode="acp", command=sys.executable,
+                                           args=str(script), timeout=30))
+    try:
+        with pytest.raises(ACPAgentError, match="连续 3 次调用失败"):
+            await engine.generate(ChatMessage(platform=Platform.WEB, chat_id="r1", content="hi"), [])
+    finally:
+        await engine.aclose()

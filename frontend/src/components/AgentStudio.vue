@@ -11,6 +11,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['toast', 'message'])
 const debugProfile = ref(null)
+const debugSession = ref('')  // 非空 = 打开指定会话（init = 初始化问询确认）
 
 const ENGINES = [
   { id: 'pi', name: 'PI', command: 'pi-acp' },
@@ -43,7 +44,26 @@ async function load() {
     const data = await api.agentProfiles()
     profiles.value = data.profiles || []
     if (profiles.value.some(p => p.pending)) startPendingPoll()
+    openInitInterviewAuto(profiles.value)
   } catch (e) { emit('toast', `Agent 配置加载失败: ${e.message}`) }
+}
+
+function openInitInterviewAuto(list) {
+  // 初始化问询完成后自动打开调试窗口，把待确认问题展示给用户（每个浏览器会话只自动弹一次）。
+  const target = list.find(p => p.init_interview?.status === 'done' && !p.init_interview.answered)
+  if (!target || debugProfile.value) return
+  const key = `chatagent:init-interview-opened:${target.id}`
+  try {
+    if (sessionStorage.getItem(key)) return
+    sessionStorage.setItem(key, '1')
+  } catch { return }
+  debugSession.value = 'init'
+  debugProfile.value = target
+}
+
+function openInitInterview(p) {
+  debugSession.value = 'init'
+  debugProfile.value = p
 }
 
 let pendingTimer = null
@@ -60,6 +80,7 @@ function startPendingPoll() {
           emit('toast', p.rewrite_status === 'failed' ? `角色改写失败：${p.rewrite_error}` : `「${p.name}」角色已重新改写并保存到 role.md`)
         }
       }
+      openInitInterviewAuto(profiles.value)
     } catch { /* ignore */ }
   }, 2500)
 }
@@ -184,7 +205,7 @@ async function saveProfile() {
 }
 
 async function removeProfile(id) {
-  if (!window.confirm('删除该 Agent？如有联系人正在使用，请先修改联系人绑定。')) return
+  if (!window.confirm('确定删除该 Agent？')) return
   try { await api.deleteAgentProfile(id); emit('toast', 'Agent 已删除'); await load() } catch (e) { emit('toast', `删除失败: ${e.message}`) }
 }
 </script>
@@ -196,17 +217,22 @@ async function removeProfile(id) {
         <h3>Agent Studio <span class="badge">{{ profiles.length }}</span></h3>
         <span class="chevron">▸</span>
       </summary>
-      <p class="hint">创建并维护 Agent 集合；在各渠道「监听联系人」的编辑弹窗中为联系人绑定 Agent。</p>
+      <p class="hint">创建并维护 Agent 集合；创建并初始化完成后，Agent 会自动列出待确认的环境等问题，并在调试窗口中与用户逐条确认。</p>
 
     <div v-for="p in profiles" :key="p.id" class="profile-row">
       <span class="p-name" :title="p.description || p.name">{{ p.name }}</span>
       <span v-if="p.pending" class="tag sync">后台处理中…</span>
-      <span v-else-if="p.rewrite_status === 'failed'" class="tag bad" :title="p.rewrite_error">改写失败</span>
-      <span v-else class="tag" :class="p.available ? 'ok' : 'bad'" :title="p.available ? '' : '命令未检测到'">
-        {{ p.available ? engineCommand(p.engine) : '未检测到' }}
-      </span>
+      <template v-else>
+        <span v-if="p.rewrite_status === 'failed'" class="tag bad" :title="p.rewrite_error">改写失败</span>
+        <span v-else class="tag" :class="p.available ? 'ok' : 'bad'" :title="p.available ? '' : '命令未检测到'">
+          {{ p.available ? engineCommand(p.engine) : '未检测到' }}
+        </span>
+        <span v-if="p.init_interview?.status === 'running' || p.init_interview?.status === 'pending'" class="tag sync" title="正在初始化问询，完成后自动打开调试">初始化问询中…</span>
+        <button v-else-if="p.init_interview?.status === 'done' && !p.init_interview.answered" class="tag init-tag" title="Agent 有待确认的问题，点击查看并回复" @click="openInitInterview(p)">待确认</button>
+        <span v-else-if="p.init_interview?.status === 'failed'" class="tag bad" :title="p.init_interview.error">初始化问询失败</span>
+      </template>
       <span class="grow"></span>
-      <button class="sm" :disabled="p.pending || p.rewrite_status === 'failed'" @click="debugProfile = p">调试</button>
+      <button class="sm" :disabled="p.pending || p.rewrite_status === 'failed'" @click="debugSession = ''; debugProfile = p">调试</button>
       <button class="sm" @click="editProfile(p)">编辑</button>
       <button class="sm danger" @click="removeProfile(p.id)">删除</button>
     </div>
@@ -308,7 +334,8 @@ async function removeProfile(id) {
     </details>
     <AgentDebug
       v-if="debugProfile"
-      :key="debugProfile.id"
+      :key="`${debugProfile.id}:${debugSession}`"
+      :initial-session="debugSession"
       :profile="debugProfile"
       :messages="debugMessages"
       :processing="processing"
@@ -334,6 +361,7 @@ async function removeProfile(id) {
 .tag.ok { color: var(--green); border-color: rgba(85, 201, 138, .3); }
 .tag.bad { color: var(--red); border-color: rgba(233, 121, 112, .3); }
 .tag.sync { color: var(--accent-strong); border-color: rgba(85, 184, 200, .35); animation: pulse 1.2s ease-in-out infinite; }
+.tag.init-tag { color: var(--accent-strong); border: 1px solid rgba(85, 184, 200, .45); cursor: pointer; }
 @keyframes pulse { 50% { opacity: .45; } }
 .sm { min-height: 26px; padding: 3px 9px; font-size: 11px; }
 .sm.danger { color: var(--red); }

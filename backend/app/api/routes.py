@@ -82,6 +82,16 @@ async def _llm_role_prompt(settings, description: str) -> str:
     return await rewrite_role(settings, description)
 
 
+INIT_SESSION = "init"  # Agent 初始化问询的专用调试会话
+INIT_INTERVIEW_PROMPT = (
+    "初始化确认：请基于你的角色定义、工作空间文件、已安装 Skills、知识库与 MCP 配置，"
+    "检查还有哪些信息需要用户确认或补充（例如：项目路径与目标分支、测试/生产环境的"
+    "数据库/Redis/MQ 连接方式、技能所需的凭据或参数、回复与输出偏好）。"
+    "请逐条编号列出问题（最多 8 条；没有则回答“暂无需要确认的内容”），每条附上你建议的默认值；"
+    "只输出问题清单，不要执行任何修改操作。"
+)
+
+
 @router.get("/agent-profiles")
 async def list_agent_profiles(request: Request):
     agent = _agent(request)
@@ -115,6 +125,8 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
 
     # 每次新建/保存都重新改写，包括内容未变、仅修改设置、调用方传了 instructions。
     existing = agent.agent_profiles.get(data["id"]) if body.id else None
+    data["init_interview"] = (existing or {}).get("init_interview") or (
+        {"status": "pending"} if existing is None else None)
     source = data["description"].strip() or data["instructions"].strip()
     if not source:
         raise HTTPException(status_code=400, detail="请填写 Agent 描述，用于 AI 角色改写")
@@ -222,14 +234,46 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
                 logger.warning("[prompts-sync] 后台同步失败 type=%s", type(exc).__name__)
         return "AI 角色已重新改写并写入 role.md"
 
+    async def _run_interview() -> None:
+        """角色改写成功后，自动询问 Agent 有哪些待用户确认的信息，结果进入调试 init 会话。"""
+        if data.get("init_interview", {}).get("status") != "pending" or not current():
+            return
+        data["init_interview"] = {"status": "running"}
+        agent.save_agent_profile(dict(data))
+        try:
+            _, reply = await agent.debug_chat(agent.agent_profiles[data["id"]], INIT_SESSION, INIT_INTERVIEW_PROMPT)
+            ok = bool(reply and (reply.content or "").strip() and not (reply.meta or {}).get("error"))
+            if not current():
+                return
+            data["init_interview"] = (
+                {"status": "done"} if ok else
+                {"status": "failed", "error": ((reply.meta or {}).get("error") if reply else "") or "Agent 未返回确认内容"})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not current():
+                return
+            data["init_interview"] = {"status": "failed", "error": str(exc)[:200] or "初始化问询失败"}
+        agent.save_agent_profile(dict(data))
+
+    def forget(completed):
+        if agent.profile_tasks.get(data["id"]) is completed:
+            agent.profile_tasks.pop(data["id"], None)
+
     if body.sync_mode == "wait":
         sync_note = await _finalize()
+        if data.get("init_interview", {}).get("status") == "pending" and current():
+            interview_task = asyncio.create_task(_run_interview())
+            agent.profile_tasks[data["id"]] = interview_task
+            interview_task.add_done_callback(forget)
+            sync_note += "；正在初始化问询，完成后请打开调试确认待确认内容"
     else:
-        task = asyncio.create_task(_finalize())
+        async def _finalize_and_interview():
+            note = await _finalize()
+            await _run_interview()
+            return note
+        task = asyncio.create_task(_finalize_and_interview())
         agent.profile_tasks[data["id"]] = task
-        def forget(completed):
-            if agent.profile_tasks.get(data["id"]) is completed:
-                agent.profile_tasks.pop(data["id"], None)
         task.add_done_callback(forget)
         sync_note = "已触发 AI 角色重新改写，请等待处理结果"
 
@@ -243,6 +287,7 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
 async def remove_agent_profile(agent_id: str, request: Request):
     """删除 Agent；若仍被任何监听联系人绑定，则拒绝删除。"""
     agent = _agent(request)
+    agent.prune_removed_contacts()
     used = [a for a in agent.agent_assignments_list() if a["agent_id"] == agent_id]
     if used:
         names = "、".join(f"{a['platform']}:{a['chat_id']}" for a in used[:5])
@@ -295,9 +340,9 @@ async def reset_agent_session(request: Request, body: SessionResetRequest):
     platform, chat_id = Platform(body.platform), body.chat_id.strip()
     if agent.contact_processing(platform, chat_id):
         raise HTTPException(status_code=409, detail="该对话正在处理中，请等待完成后再清空会话")
-    cleared = agent.reset_contact_session(platform, chat_id)
+    deleted = agent.reset_contact_session(platform, chat_id)
     boundary = agent.session_resets[(platform.value, chat_id)]
-    return {"platform": platform.value, "chat_id": chat_id, "reset": cleared,
+    return {"platform": platform.value, "chat_id": chat_id, "reset": True, "deleted": deleted,
             "session_token": boundary["token"], "reset_at": boundary["reset_at"]}
 
 
@@ -313,6 +358,13 @@ async def debug_agent_profile(agent_id: str, request: Request, body: AgentDebugR
     if not content:
         raise HTTPException(status_code=400, detail="消息内容不能为空")
     incoming, reply = await agent.debug_chat(profile, body.session_id, content)
+    interview = profile.get("init_interview")
+    current = agent.agent_profiles.get(agent_id)
+    if (current is profile and body.session_id == INIT_SESSION
+            and isinstance(interview, dict)
+            and interview.get("status") == "done" and not interview.get("answered")):
+        interview["answered"] = True
+        agent.save_agent_profile(profile)
     return {"message": incoming.model_dump(mode="json"),
             "reply": reply.model_dump(mode="json") if reply else None}
 
@@ -496,6 +548,7 @@ async def set_contacts(request: Request, body: ContactsRequest, platform: str | 
         agent.settings.allowed_contacts = cleaned
         yaml_updates = {"allowed_contacts": cleaned}
         result = {"allowed_contacts": agent.settings.allowed_contacts}
+    agent.prune_removed_contacts()
     persisted = False
     if agent.settings.config_file:
         try:

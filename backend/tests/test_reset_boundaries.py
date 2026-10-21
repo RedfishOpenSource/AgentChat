@@ -37,7 +37,8 @@ async def test_history_cutoff_survives_restart_and_preserves_other_platform(tmp_
         return message
     await ask(Platform.WECHAT, 'old-wechat-secret')
     await ask(Platform.DINGTALK, 'old-dingtalk-secret')
-    assert agent.reset_contact_session(Platform.WECHAT, 'same') is True
+    assert agent.reset_contact_session(Platform.WECHAT, 'same') >= 2
+    assert not agent.store.list_messages(platform='wechat', chat_id='same')  # 页面与数据库记录已删除
     await ask(Platform.WECHAT, 'fresh')
     assert engine.histories[-1][1] == []
     await ask(Platform.WECHAT, 'follow-up')
@@ -45,7 +46,7 @@ async def test_history_cutoff_survives_restart_and_preserves_other_platform(tmp_
     assert 'old-wechat-secret' not in engine.histories[-1][1]
     await ask(Platform.DINGTALK, 'other-platform')
     assert 'old-dingtalk-secret' in engine.histories[-1][1]
-    assert any(m.meta.get('session_reset') for m in agent.store.list_messages())
+    assert any(m.chat_id == 'same' and m.platform == Platform.DINGTALK for m in agent.store.list_messages())
     await agent.shutdown()
     restored_engine = HistoryEngine()
     restored = service(db, restored_engine)

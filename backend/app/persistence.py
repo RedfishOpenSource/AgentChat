@@ -171,6 +171,16 @@ class SqliteStore:
                 (platform, chat_id, agent_id),
             )
 
+    def remove_contact(self, platform: str, chat_id: str) -> None:
+        """移除监听联系人时，在同一事务中清理绑定和联系人配置。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM agent_assignments WHERE platform = ? AND chat_id = ?", (platform, chat_id)
+            )
+            self._conn.execute(
+                "DELETE FROM contact_configs WHERE platform = ? AND chat_id = ?", (platform, chat_id)
+            )
+
     def unassign_agent(self, platform: str, chat_id: str) -> None:
         with self._lock, self._conn:
             self._conn.execute(
@@ -258,6 +268,14 @@ class SqliteStore:
         with self._lock:
             row = self._conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
         return self._rows_to_messages([row])[0] if row else None
+
+    def delete_chat_messages(self, platform: str, chat_id: str) -> int:
+        """删除某会话的全部消息记录（含草稿与系统标记），返回删除条数。"""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM messages WHERE platform = ? AND chat_id = ?", (platform, chat_id)
+            )
+            return cur.rowcount
 
     def list_messages(self, platform: str | None = None, chat_id: str | None = None,
                       direction: str | None = None, status: str | None = None,

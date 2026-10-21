@@ -51,7 +51,9 @@ def test_contact_chat_reuses_session_resets_and_never_auto_sends(client, tmp_pat
     }).json()
     assert 'sess-3' in after['reply']['content']
     assert all(not conn.sent for conn in agent.connectors.values())
-    assert client.get('/api/messages').json()['messages'][0]['id'] == first['message']['id']
+    listing = client.get('/api/messages').json()['messages']
+    assert all(m['id'] != first['message']['id'] for m in listing)  # 清空已删除旧记录
+    assert any(m['platform'] == 'dingtalk' and m['chat_id'] == 'c1' for m in listing)  # 其他会话不受影响
 
 
 def test_contact_chat_validation_and_busy_reset(client):

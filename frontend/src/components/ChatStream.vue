@@ -10,7 +10,7 @@ const props = defineProps({
   loadingOlder: { type: Boolean, default: false },
   hasOlder: { type: Boolean, default: true },
 })
-const emit = defineEmits(['action', 'select-candidate', 'load-older', 'regenerate', 'toast', 'message'])
+const emit = defineEmits(['action', 'select-candidate', 'load-older', 'regenerate', 'toast', 'message', 'chat-cleared'])
 
 const filter = ref('wechat')
 const contact = ref('')
@@ -41,13 +41,13 @@ const resetBusy = computed(() => !!resetting[conversationKey.value])
 async function resetCurrentSession() {
   const platform = filter.value, chatId = currentContact.value, key = conversationKey.value
   if (!chatId || conversationBusy.value || resetBusy.value) return
-  if (!window.confirm(`清空「${chatId}」的 AI 会话？\n下一条消息或补充提问将开启新会话，聊天记录仍保留。`)) return
+  if (!window.confirm(`清空「${chatId}」的会话？\n页面聊天内容与数据库记录将一并删除，AI 从全新会话开始，不可恢复。`)) return
   resetting[key] = true
   try {
     const result = await api.resetSession(platform, chatId)
     if (!result.reset) throw new Error('服务未确认会话已重置，请重试')
-    scrollToBottom()
-    emit('toast', `「${chatId}」的会话已清空，下一条消息将开启新会话`)
+    emit('chat-cleared', { platform, chat_id: chatId })
+    emit('toast', `「${chatId}」的会话已清空（已删除 ${result.deleted ?? 0} 条记录），下一条消息开启全新会话`)
   } catch (e) { emit('toast', `清空失败：${e.message}`) }
   finally { delete resetting[key] }
 }
