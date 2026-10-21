@@ -27,7 +27,6 @@ const showPicker = ref(false)
 const loading = ref(false)
 const suggestions = ref([]) // [{name, username, source}]
 const checked = ref([])     // 弹窗中勾选的监听联系人
-const manual = ref('')
 const keyword = ref('')
 const profiles = ref([])    // AgentStudio 创建的 Agent
 const rows = ref({})        // chat_id -> {agent_id, timeout, group_trigger, non_text_action, debounce_seconds}
@@ -103,15 +102,6 @@ function toggle(s) {
     checked.value.push(v)
     rowOf(v) // 勾选即准备配置行，可在选择时指定 Agent
   }
-}
-
-function addManual() {
-  const v = manual.value.trim()
-  if (v && !checked.value.includes(v)) {
-    checked.value.push(v)
-    rowOf(v)
-  }
-  manual.value = ''
 }
 
 async function finishPicker() {
@@ -263,10 +253,6 @@ defineExpose({ loadConfigs })
             </div>
           </div>
         </div>
-        <div class="manual-row">
-          <input v-model="manual" placeholder="手动输入会话名 / ID，回车添加" @keydown.enter.prevent="addManual" />
-          <button @click="addManual">添加</button>
-        </div>
         <div class="modal-actions">
           <button :disabled="saving" @click="finishPicker">
             {{ saving ? '保存中…' : `完成（监听 ${checked.length} 人）` }}
@@ -323,8 +309,6 @@ defineExpose({ loadConfigs })
 .sug-agent select { width: 180px; min-height: 26px; padding: 2px 6px; font-size: 11px; }
 .no-agent { color: var(--red); font-size: 10px; }
 .empty { padding: 18px 10px; color: var(--text-muted); font-size: 11px; text-align: center; }
-.manual-row { display: flex; gap: 6px; margin-top: 8px; }
-.manual-row input { flex: 1; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
 .pick-hint { margin-top: 7px; color: var(--text-muted); font-size: 10px; text-align: center; }
 </style>

@@ -22,6 +22,7 @@ const platformNames = { wechat: '微信', dingtalk: '钉钉' }
 const csOpen = ref(false)
 const csKeyword = ref('')
 const streamEl = ref(null)
+const pinned = ref(true)  // 用户是否在底部附近；进度卡片变高时仅贴底时跟随
 const suppOpenId = ref('')
 const suppText = ref('')
 const composerDrafts = reactive({})
@@ -114,13 +115,38 @@ function progressHint(p) {
 
 watch(filter, () => { contact.value = '' })
 
-// 新消息到达时自动滚动到底部（加载更早消息不触发）
+// 切换联系人/平台时滚动到底部
+watch(conversationKey, () => {
+  pinned.value = true
+  scrollToBottom()
+})
+
+// 新消息到达时总是滚动到底部（用户要求；加载更早消息不改变末条 id，不会触发）
 watch(
   () => props.messages.at(-1)?.id,
   (id, old) => {
-    if (id && id !== old) scrollToBottom()
+    if (id && id !== old) {
+      pinned.value = true
+      scrollToBottom()
+    }
   },
 )
+
+// 最后一条消息的处理进度/预览更新会使气泡变高：用户在底部附近时保持贴底
+watch(
+  () => {
+    const m = props.messages.at(-1)
+    const proc = m?.meta?.processing
+    return proc ? `${m.id}:${proc.preview?.length || 0}:${proc.steps?.length || 0}:${proc.detail || ''}` : ''
+  },
+  () => { if (pinned.value) scrollToBottom() },
+)
+
+function onStreamScroll() {
+  const el = streamEl.value
+  if (!el) return
+  pinned.value = el.scrollHeight - el.scrollTop - el.clientHeight < 140
+}
 
 function scrollToBottom() {
   nextTick(() => {
@@ -228,7 +254,7 @@ function shortChat(id) {
       >{{ resetBusy ? '清空中…' : '清空会话' }}</button>
     </div>
 
-    <div ref="streamEl" class="stream">
+    <div ref="streamEl" class="stream" @scroll="onStreamScroll">
       <button v-if="hasOlder" class="load-older" :disabled="loadingOlder" @click="emit('load-older')">
         {{ loadingOlder ? '加载中…' : '加载更早消息' }}
       </button>
