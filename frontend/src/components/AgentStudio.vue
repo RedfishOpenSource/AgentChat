@@ -296,7 +296,8 @@ async function removeProfile(id) {
                 <option v-for="e in ENGINES" :key="e.id" :value="e.id">{{ e.name }}</option>
               </select>
             </label>
-            <label>超时（秒）<input v-model.number="form.timeout" type="number" min="5" max="3600" /></label>
+            <label>超时（秒）<input v-model.number="form.timeout" type="number" min="0" max="3600" step="1" />
+              <span class="field-hint">0 = 不限制等待，适合长时间分析；否则 5-3600 秒</span></label>
           </div>
           <div class="ws-row">
             <label class="grow">工作空间 *
@@ -421,6 +422,7 @@ async function removeProfile(id) {
 .tabs button { min-height: 32px; padding: 6px 14px; border: 0; background: transparent; color: var(--text-dim); font-size: 12px; border-radius: 5px 5px 0 0; }
 .tabs button.active { background: var(--panel-2); color: var(--accent-strong); box-shadow: inset 0 -2px 0 var(--accent); }
 .tab-hint { color: var(--text-muted); font-size: 10px; }
+.field-hint { color: var(--text-muted); font-size: 10px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .ws-row { display: flex; align-items: flex-start; gap: 7px; }
 .ws-row .grow { flex: 1; min-width: 0; }

@@ -401,7 +401,7 @@ class AgentService:
         cfg = self.contact_configs.get((platform.value, chat_id)) or {}
         s = self.settings
         return {
-            "timeout": float(cfg.get("timeout") or s.acp.timeout),
+            "timeout": float(cfg.get("timeout") if cfg.get("timeout") is not None else s.acp.timeout),
             "group_trigger": str(cfg.get("group_trigger") or s.group_trigger),
             "non_text_action": str(cfg.get("non_text_action") or s.non_text_action),
             "debounce_seconds": max(0.0, float(cfg.get("debounce_seconds") if cfg.get("debounce_seconds") is not None else s.debounce_seconds)),
@@ -628,7 +628,7 @@ class AgentService:
         profile = profile or self.profile_for(incoming.platform, incoming.chat_id)
         cc = self.contact_config_for(incoming.platform, incoming.chat_id)
         if incoming.meta.get("debug_profile_id") and profile:
-            cc["timeout"] = float(profile.get("timeout") or 300)
+            cc["timeout"] = float(profile.get("timeout")) if profile.get("timeout") is not None else 300
         self._thinking_set(
             incoming, "preparing", detail="正在准备上下文",
             agent=profile["name"] if profile else ("默认 Agent" if self.engine.name == "acp" else self.engine.name),
@@ -638,15 +638,23 @@ class AgentService:
         try:
             engine = self.engine_for_profile(profile) if profile else self.engine
             self._apply_session_token(engine, incoming.platform, incoming.chat_id)
-            async with asyncio.timeout(cc["timeout"]):
+            timeout_secs = float(cc["timeout"] or 0)
+
+            async def _run():
                 if isinstance(engine, ACPAgentGenerator):
-                    result = await engine.generate(
+                    return await engine.generate(
                         incoming, history, kb=self.kb_for(incoming.platform),
                         on_progress=lambda phase, **extra: self._thinking_set(incoming, phase, **extra),
                     )
-                else:
-                    self._thinking_set(incoming, "thinking", detail="正在等待 AI 生成回复")
-                    result = await engine.generate(incoming, history, kb=self.kb_for(incoming.platform))
+                self._thinking_set(incoming, "thinking", detail="正在等待 AI 生成回复")
+                return await engine.generate(incoming, history, kb=self.kb_for(incoming.platform))
+
+            if timeout_secs > 0:
+                async with asyncio.timeout(timeout_secs):
+                    result = await _run()
+            else:
+                # timeout=0：不限制等待时长（AI 长时间分析不中断）。
+                result = await _run()
         except Exception as exc:  # noqa: BLE001
             # 降级：引擎不可用时生成错误占位草稿，进入人工流程（消息绝不静默丢失）
             error = f"超过 {cc['timeout']:g} 秒仍未完成，已停止等待" if isinstance(exc, TimeoutError) else str(exc)[:200]
@@ -824,8 +832,8 @@ class AgentService:
                 and not updates.get("acp_command", s.acp.command).strip()):
             raise ValueError("engine=acp 需要先配置 Agent 启动命令（acp_command）")
         if updates.get("acp_timeout") is not None:
-            if not (5.0 <= float(updates["acp_timeout"]) <= 3600):
-                raise ValueError("acp_timeout 范围 5-3600 秒")
+            if not (float(updates["acp_timeout"]) == 0 or 5.0 <= float(updates["acp_timeout"]) <= 3600):
+                raise ValueError("acp_timeout 为 0（不限制）或 5-3600 秒")
         if updates.get("num_candidates") is not None and not 1 <= int(updates["num_candidates"]) <= 5:
             raise ValueError("num_candidates 范围 1-5")
         if updates.get("temperature") is not None:

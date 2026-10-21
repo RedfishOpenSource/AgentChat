@@ -120,8 +120,8 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
         raise HTTPException(status_code=400, detail=f"工作空间目录不存在: {data['workspace']}")
     if body.knowledge_dir and not _Path(body.knowledge_dir).expanduser().is_dir():
         raise HTTPException(status_code=400, detail=f"知识库目录不存在: {body.knowledge_dir}")
-    if not (5 <= float(body.timeout) <= 3600):
-        raise HTTPException(status_code=400, detail="timeout 范围 5-3600 秒")
+    if float(body.timeout) != 0 and not (5 <= float(body.timeout) <= 3600):
+        raise HTTPException(status_code=400, detail="timeout 为 0（不限制）或 5-3600 秒")
 
     # 每次新建/保存都重新改写，包括内容未变、仅修改设置、调用方传了 instructions。
     existing = agent.agent_profiles.get(data["id"]) if body.id else None
@@ -435,8 +435,8 @@ async def put_contact_config(request: Request, body: ContactConfigRequest):
         raise HTTPException(status_code=400, detail="platform 仅支持 wechat / dingtalk")
     if not (0 <= body.debounce_seconds <= 300):
         raise HTTPException(status_code=400, detail="debounce_seconds 范围 0-300 秒")
-    if not (5 <= body.timeout <= 3600):
-        raise HTTPException(status_code=400, detail="timeout 范围 5-3600 秒")
+    if float(body.timeout) != 0 and not (5 <= body.timeout <= 3600):
+        raise HTTPException(status_code=400, detail="timeout 为 0（不限制）或 5-3600 秒")
     if body.group_trigger not in ("at-mention", "all", "listen-only"):
         raise HTTPException(status_code=400, detail="group_trigger 不合法")
     if body.non_text_action not in ("placeholder", "skip"):
@@ -529,8 +529,15 @@ async def contact_suggestions(request: Request, platform: str):
             if username:
                 break
         value = username or m.chat_id
-        if value not in items:
-            items[value] = {"name": m.chat_id, "username": username, "source": "消息记录"}
+        if value in items:
+            continue
+        # 同名或同账号的联系人已来自会话列表时不再重复给出（同一联系人两种来源）。
+        if any(
+            item["name"] == m.chat_id or (username and item["username"] == username)
+            for item in items.values()
+        ):
+            continue
+        items[value] = {"name": m.chat_id, "username": username, "source": "消息记录"}
     return {"platform": p.value, "suggestions": list(items.values())}
 
 

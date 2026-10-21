@@ -225,3 +225,22 @@ def test_suggestions_wechat_uses_session_names(tmp_path):
     assert by_username["123@chatroom"]["name"] == "项目群"
     assert by_username["wxid_zhang"]["name"] == "张三（公司）"
     assert by_username["123@chatroom"]["source"] == "会话列表"
+
+
+def test_suggestions_dedupe_message_records_with_session_list(tmp_path):
+    """同名/同账号联系人已来自会话列表时，消息记录来源不再重复给出。"""
+    s = make_settings()
+    s.wechat = ConnectorSettings(enabled=True, mode="replica")
+    app = create_app(s)
+    with TestClient(app, client=("127.0.0.1", 12345)) as client:
+        conn = client.app.state.agent.connectors[Platform.WECHAT]
+        conn._db = FakeWeChatDB()
+        store = client.app.state.agent.store
+        # 会话列表里已有「项目群」；消息记录里的同名联系人缺用户名、另一陌生人有不同用户名
+        store.add(ChatMessage(platform=Platform.WECHAT, chat_id="项目群", sender="项目群", content="hi", meta={}))
+        store.add(ChatMessage(platform=Platform.WECHAT, chat_id="陌生人", sender="陌生人", content="hi",
+                              meta={"replica": {"username": "wxid_stranger"}}))
+        data = client.get("/api/contacts/suggestions", params={"platform": "wechat"}).json()
+        dup = [x for x in data["suggestions"] if x["name"] == "项目群"]
+        assert len(dup) == 1 and dup[0]["source"] == "会话列表"
+        assert any(x["name"] == "陌生人" and x["source"] == "消息记录" for x in data["suggestions"])

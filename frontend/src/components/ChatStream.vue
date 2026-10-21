@@ -115,33 +115,6 @@ function progressHint(p) {
 
 watch(filter, () => { contact.value = '' })
 
-// 切换联系人/平台时滚动到底部
-watch(conversationKey, () => {
-  pinned.value = true
-  scrollToBottom()
-})
-
-// 新消息到达时总是滚动到底部（用户要求；加载更早消息不改变末条 id，不会触发）
-watch(
-  () => props.messages.at(-1)?.id,
-  (id, old) => {
-    if (id && id !== old) {
-      pinned.value = true
-      scrollToBottom()
-    }
-  },
-)
-
-// 最后一条消息的处理进度/预览更新会使气泡变高：用户在底部附近时保持贴底
-watch(
-  () => {
-    const m = props.messages.at(-1)
-    const proc = m?.meta?.processing
-    return proc ? `${m.id}:${proc.preview?.length || 0}:${proc.steps?.length || 0}:${proc.detail || ''}` : ''
-  },
-  () => { if (pinned.value) scrollToBottom() },
-)
-
 function onStreamScroll() {
   const el = streamEl.value
   if (!el) return
@@ -210,6 +183,33 @@ const filtered = computed(() =>
   props.messages.filter((m) =>
     m.platform === filter.value
     && (!contact.value || m.chat_id === contact.value))
+)
+
+// 切换联系人/平台时滚动到底部
+watch(conversationKey, () => {
+  pinned.value = true
+  scrollToBottom()
+})
+
+// 新消息到达时总是滚动到底部（用户要求；加载更早消息不改变末条 id，不会触发）
+watch(
+  () => props.messages.at(-1)?.id,
+  (id, old) => {
+    if (id && id !== old) {
+      pinned.value = true
+      scrollToBottom()
+    }
+  },
+)
+
+// 最后一条消息的处理进度/预览更新会使气泡变高：用户在底部附近时保持贴底
+watch(
+  () => {
+    const m = props.messages.at(-1)
+    const proc = m?.meta?.processing
+    return proc ? `${m.id}:${proc.preview?.length || 0}:${proc.steps?.length || 0}:${proc.detail || ''}` : ''
+  },
+  () => { if (pinned.value) scrollToBottom() },
 )
 
 function fmt(ts) {

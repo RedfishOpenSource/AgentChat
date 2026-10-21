@@ -217,7 +217,8 @@ defineExpose({ loadConfigs })
               </select>
             </label>
             <label>连发合并（秒）<input v-model.number="editForm.debounce_seconds" type="number" min="0" step="0.5" /></label>
-            <label>超时（秒）<input v-model.number="editForm.timeout" type="number" min="5" max="3600" /></label>
+            <label>超时（秒）<input v-model.number="editForm.timeout" type="number" min="0" max="3600" step="1" />
+              <span class="field-hint">0 = 不限制等待，适合长时间分析</span></label>
           </div>
         </div>
         <div class="modal-actions">
@@ -289,6 +290,7 @@ defineExpose({ loadConfigs })
 .edit-form { display: flex; flex-direction: column; gap: 10px; }
 .edit-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-dim); }
 .edit-form select, .edit-form input { min-height: 30px; font-size: 12px; }
+.field-hint { color: var(--text-muted); font-size: 10px; }
 .field-err { color: var(--red); font-size: 10px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 .mask { position: fixed; inset: 0; z-index: 60; background: rgba(4, 7, 10, .62); display: flex; align-items: center; justify-content: center; padding: 20px; }

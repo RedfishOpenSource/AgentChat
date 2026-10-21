@@ -211,3 +211,26 @@ async def test_acp_empty_after_retries_raises_clear_error(tmp_path):
             await engine.generate(ChatMessage(platform=Platform.WEB, chat_id="r1", content="hi"), [])
     finally:
         await engine.aclose()
+
+
+@pytest.mark.asyncio
+async def test_prompt_includes_profile_instructions(hot_client, tmp_path):
+    """Agent 的角色指令（role.md 内容）必须注入每条消息的提示词。"""
+    import asyncio
+
+    from app.config import ACPSettings
+    from app.engine.acp import ACPAgentGenerator
+    from app.models import ChatMessage, Platform
+
+    script = tmp_path / "fake_acp_agent.py"
+    script.write_text(FAKE_ACP_AGENT, encoding="utf-8")
+    engine = ACPAgentGenerator(ACPSettings(
+        mode="acp", command=sys.executable, args=str(script), cwd=str(tmp_path), timeout=60,
+        instructions="后端项目：D:/proj/back；前端项目：D:/proj/web。分析前先确认项目地址。"))
+    try:
+        result = await engine.generate(
+            ChatMessage(platform=Platform.WEB, chat_id="c1", content="项目在哪"), [])
+        assert "后端项目：D:/proj/back" in result.content, "角色指令未注入提示词"
+        assert "项目在哪" in result.content
+    finally:
+        await engine.aclose()

@@ -307,7 +307,7 @@ class ACPAgentGenerator(ReplyGenerator):
                 init = await self._acp_request(
                     "initialize",
                     {"protocolVersion": PROTOCOL_VERSION, "clientCapabilities": {}},
-                    timeout=min(60.0, self.cfg.timeout),
+                    timeout=min(60.0, self.cfg.timeout) if self.cfg.timeout > 0 else 60.0,
                 )
                 if "error" in init:
                     raise ACPAgentError(f"Agent initialize 失败: {init['error']}")
@@ -334,7 +334,7 @@ class ACPAgentGenerator(ReplyGenerator):
                 res = await self._acp_request(
                     "session/prompt",
                     {"sessionId": sid, "prompt": [{"type": "text", "text": self._prompt_text(message)}]},
-                    timeout=self.cfg.timeout,
+                    timeout=self.cfg.timeout or None,  # 0 = 不限制等待
                     collect=chunks, on_progress=on_progress,
                 )
             except asyncio.TimeoutError:
@@ -416,7 +416,7 @@ class ACPAgentGenerator(ReplyGenerator):
             responses["ca-text"] = fut
             proc.stdin.write((json.dumps({"id": "ca-text", "type": "get_last_assistant_text"}) + "\n").encode())
             await proc.stdin.drain()
-            resp = await asyncio.wait_for(fut, timeout=min(30.0, timeout))
+            resp = await asyncio.wait_for(fut, timeout=min(30.0, timeout) if timeout else 30.0)
             return str((resp.get("data") or {}).get("text") or "")
         finally:
             reader_task.cancel()
@@ -452,7 +452,7 @@ class ACPAgentGenerator(ReplyGenerator):
                 raise ACPAgentError(f"启动 pi 失败: {exc}") from exc
             try:
                 _progress(on_progress, "thinking", detail="问题已提交，等待 Agent 响应")
-                text = await self._pi_prompt(proc, self._prompt_text(message), self.cfg.timeout, on_progress)
+                text = await self._pi_prompt(proc, self._prompt_text(message), self.cfg.timeout or None, on_progress)
             finally:
                 await _stop_process(proc)
             logger.info("[acp] pi 回复 %s/%s (session=%s): %s", key[0], key[1], sid, text[:60])
