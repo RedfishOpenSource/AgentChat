@@ -121,7 +121,7 @@ class AgentProfileRequest(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     knowledge_dir: str = ""
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
-    plan_before_execute: bool = False
+    plan_before_execute: bool = True
     timeout: float = 300
     sync_mode: str = Field(default="background", pattern=r"^(background|wait)$")
 

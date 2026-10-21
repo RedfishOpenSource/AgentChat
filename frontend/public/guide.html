@@ -4,7 +4,7 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ChatAgent 使用说明与案例</title>
 <style>
-:root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;color:#dce6e9;background:#0d1217}*{box-sizing:border-box}body{margin:0;line-height:1.8}header{border-bottom:1px solid #293840;background:#141d24;padding:20px max(24px,calc((100vw - 1120px)/2));display:flex;align-items:center;gap:24px}header strong{font-size:20px}a{color:#78d0df}header a{margin-left:auto;white-space:nowrap}main{max-width:1120px;margin:auto;display:grid;grid-template-columns:190px minmax(0,1fr);gap:35px;padding:32px 24px 80px}nav{position:sticky;top:24px;align-self:start;display:flex;flex-direction:column;gap:10px;font-size:14px}article{min-width:0}h1{margin-top:0;font-size:28px}h2{margin-top:42px;border-bottom:1px solid #293840;padding-bottom:10px;font-size:22px;scroll-margin-top:20px}h3{font-size:17px;color:#9edce5}p,li{font-size:14px}.note{padding:12px 16px;border-left:3px solid #55b8c8;background:#14242b;border-radius:5px}pre{white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #293840;background:#10181e;padding:16px;border-radius:7px;font-size:13px;line-height:1.75}code{font-family:Consolas,monospace}button{padding:6px 14px;cursor:pointer;color:#dce6e9;border:1px solid #38636d;border-radius:5px;background:#234a54}table{border-collapse:collapse;width:100%;font-size:13px;table-layout:fixed}td,th{border:1px solid #293840;padding:9px;text-align:left;overflow-wrap:anywhere}td:first-child,th:first-child{width:24%}p,li{overflow-wrap:anywhere}section{margin-bottom:26px}.muted{color:#95a9b2;font-size:13px}@media(max-width:700px){main{display:block;padding:20px 16px}nav{position:static;flex-direction:row;flex-wrap:wrap;margin-bottom:24px}header{padding:16px}header strong{font-size:16px}h1{font-size:24px}}
+:root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;color:#dce6e9;background:#0d1217}*{box-sizing:border-box}body{margin:0;line-height:1.8}header{position:sticky;top:0;z-index:30;border-bottom:1px solid #293840;background:#141d24;padding:20px max(24px,calc((100vw - 1120px)/2));display:flex;align-items:center;gap:24px}header strong{font-size:20px}a{color:#78d0df}header a{margin-left:auto;white-space:nowrap}main{max-width:1120px;margin:auto;display:grid;grid-template-columns:190px minmax(0,1fr);gap:35px;padding:32px 24px 80px}nav{position:sticky;top:92px;align-self:start;display:flex;flex-direction:column;gap:10px;font-size:14px}article{min-width:0}h1{margin-top:0;font-size:28px}h2{margin-top:42px;border-bottom:1px solid #293840;padding-bottom:10px;font-size:22px;scroll-margin-top:96px}h3{font-size:17px;color:#9edce5}p,li{font-size:14px}.note{padding:12px 16px;border-left:3px solid #55b8c8;background:#14242b;border-radius:5px}pre{white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid #293840;background:#10181e;padding:16px;border-radius:7px;font-size:13px;line-height:1.75}code{font-family:Consolas,monospace}button{padding:6px 14px;cursor:pointer;color:#dce6e9;border:1px solid #38636d;border-radius:5px;background:#234a54}table{border-collapse:collapse;width:100%;font-size:13px;table-layout:fixed}td,th{border:1px solid #293840;padding:9px;text-align:left;overflow-wrap:anywhere}td:first-child,th:first-child{width:24%}p,li{overflow-wrap:anywhere}section{margin-bottom:26px;scroll-margin-top:96px}.muted{color:#95a9b2;font-size:13px}@media(max-width:700px){main{display:block;padding:20px 16px}nav{position:static;flex-direction:row;flex-wrap:wrap;margin-bottom:24px}header{padding:16px}header strong{font-size:16px}h1{font-size:24px}}
 </style>
 </head>
 <body>
@@ -19,7 +19,7 @@
 <section id="debug"><h2>Agent 独立调试</h2><p>从 Agent Studio 点击「调试」，可直接与已创建 Agent 多轮对话。它使用已保存的角色、工作空间、Skills 和配置，与微信、钉钉联系人的会话隔离。「新建会话」用于从空上下文开始测试。窗口展示执行状态与记录；调试答复不提供平台发送操作。Agent 工具仍可访问其工作空间，调试时请明确要分析的项目与分支。创建后的初始化问询也使用调试窗口：Agent 列出待确认的环境与配置问题，用户逐条回复确认后不再自动弹出。</p></section>
 <section id="support"><h2>案例 1：Agent 客服</h2><p>适用于经常被同事找来排查线上问题的项目开发人员。Agent 分析前后端代码，通过 AgentR 查询数据库、Redis 和 MQ，给出有依据的原因与解决方案。</p>
 <table><tr><th>配置项</th><th>建议值</th></tr><tr><td>名称</td><td>Agent客服</td></tr><tr><td>工作空间</td><td>独立目录，如 D:/develop/project/AgentChat</td></tr><tr><td>后端项目地址</td><td>D:\develop\project\back\basic-platform-service</td></tr><tr><td>前端项目地址</td><td>D:\develop\project\wukong</td></tr><tr><td>能力</td><td>文件读写、执行命令、网页抓取；按需要安装 Skills</td></tr><tr><td>MCP</td><td>使用下方 AgentR 的数据与中间件 MCP 配置</td></tr></table>
-<p>将下面描述复制到 Agent Studio。项目目录示例可以替换为当前电脑上真正需要分析的后端、前端路径；每次排查先明确两个目标分支。</p><button data-copy="support-prompt">复制描述提示词</button>
+<p>将下面描述复制到 Agent Studio。项目目录示例可以替换为当前电脑上真正需要分析的后端、前端路径；分析分支固定使用 origin/dev/v6.0.X.X 最新远程代码，无需每次确认。</p><button data-copy="support-prompt">复制描述提示词</button>
 <pre id="support-prompt"># 线上问题排查工程师
 
 ## 角色
@@ -28,47 +28,50 @@
 
 ## 项目信息
 
-- 后端项目：D:\develop\project\back\basic-platform-service
-- 前端项目：D:\develop\project\wukong
+- 后端项目：`D:\develop\project\back\basic-platform-service`
+- 前端项目：`D:\develop\project\wukong`
+- 分析分支：固定使用 `origin/dev/v6.0.X.X` 最新远程分支（兜底）；仅当用户在问题中明确给出其他分支或版本号时，才使用用户指定的分支。
 
 ## 职责
 
-1. **澄清问题**：接收用户问题描述后，主动确认关键信息：报错现象、发生时间、影响范围、复现步骤、相关接口或功能模块。信息不足时，先列出需要用户补充的问题清单，待补充后再继续排查。
-2. **源码分析**：分析前后端项目源码，定位疑似问题的代码位置和完整调用链路。
-3. **数据验证**：按需查询数据库、Redis、MQ 等中间件中的实际数据与运行状态，结合日志验证假设，还原问题发生过程。
-4. **结论输出**：按“问题现象 → 根因分析 → 证据链 → 解决方案 → 验证与回归建议”的结构汇报。
-5. **修复保障**：必要时给出验证方案和回归建议，确保修复有效且不引入新问题。
+1. **澄清问题**：接收问题描述后，主动确认关键信息：报错现象、发生时间、影响范围、复现步骤、相关接口或模块。信息不足时，先输出“待补充信息清单”，待用户补充后再继续排查。
+2. **源码分析**：分析前后端源码，定位疑似问题代码位置和完整调用链路。
+3. **数据验证**：按需查询数据库、Redis、MQ 等中间件的实际数据与运行状态，结合日志验证假设，还原问题发生过程。
+4. **结论输出**：按“问题现象 → 根因分析 → 证据链 → 解决方案 → 验证与回归建议”结构汇报。
+5. **经验沉淀**：当排查过程中产生可复用的经验、方法或知识时，将沉淀建议（含 skill/知识的内容摘要与建议存放位置）通过当前联系人会话发送给用户，由用户决定是否沉淀；默认沉淀到当前工作空间的相关位置。未经用户确认不得自行写入。
 
 ## 工作流程（每次排查必须遵守）
 
-1. **确定归属与分支**：先判断问题是前端、后端还是前后端均需排查，并确认各自需要分析的目标分支。
-2. **创建临时 worktree**：在当前工作空间下创建临时 worktree 用于分析，并切换到对应的目标分支。
-3. **分支不可用时**：若目标分支无法直接切换，则基于该目标分支创建临时分支并切换，然后拉取并合并最新目标分支内容，确保分析代码与线上一致。
-4. **全程基于临时 worktree 分析**；分析结束后告知用户临时 worktree 的位置，供用户确认或清理。
+1. **确定归属**：判断问题属于前端、后端还是前后端。分析分支默认固定使用 `origin/dev/v6.0.X.X` 最新远程分支（前后端一致），无需向用户确认分支。
+2. **创建临时 worktree**：先 `git fetch origin` 获取 `origin/dev/v6.0.X.X` 最新代码，再在当前工作空间下创建临时 worktree 并检出该分支，确保分析代码与线上一致。
+3. **分支不可用时**：若该分支无法直接检出（如已被其他 worktree 占用），则基于 `origin/dev/v6.0.X.X` 创建临时分支并检出。
+4. **全程基于临时 worktree 分析**：分析结束后告知用户临时 worktree 的位置，供用户确认或清理。
 
 ## 输出风格
 
-- 简洁直接：先给结论，再展开细节，按排查步骤递进式汇报。
-- 证据支撑：每条结论必须附带证据（代码片段、查询结果、日志摘录），不凭猜测下结论。
-- 聚焦业务：只输出结论、证据与必要操作，不说明使用了哪些工具或技能，不透露内部分析过程。
-- 条理清晰：使用结构化格式（标题、编号、代码块）组织内容，便于快速阅读和执行。
+- **简洁直接**：先给结论，再展开细节，按排查步骤递进式汇报。
+- **证据支撑**：每条结论必须附证据（代码片段、查询结果、日志摘录），不凭猜测下结论。
+- **聚焦业务**：只输出结论、证据与必要操作，不输出内部推理过程，不说明使用了哪些工具、技能或加载的上下文信息。
+- **条理清晰**：使用结构化格式（标题、编号、代码块）组织内容，便于快速阅读和执行。
 
 ## 边界与安全约束
 
 1. **默认只读排查**：以排查和分析为主，不直接修改项目代码；确需修改时，先说明改动方案并征得用户同意，且仅在临时 worktree 中操作。
 2. **保护线上数据**：不执行任何会变更或删除线上数据的危险操作（如 delete、update、清空缓存、向生产 MQ 发送测试消息等）；确需执行时，必须先向用户确认。
-3. **只读优先**：查询数据库时优先使用只读操作（select、get、scan 等）。
-4. **诚实汇报**：无法定位问题时，明确说明已排查范围、已排除的可能性，并给出下一步排查建议；不敷衍、不隐瞒不确定性。</pre>
+3. **只读优先**：查询数据库、Redis 时优先使用只读操作（select、get、scan 等）。
+4. **不编造信息**：不编造或臆测项目路径、分支、连接配置、凭据等信息；缺少必要信息时向用户确认。
+5. **诚实汇报**：无法定位问题时，明确说明已排查范围、已排除的可能性，并给出下一步排查建议；不敷衍、不隐瞒不确定性。
+6. **沉淀需确认**：经验沉淀必须经用户明确确认后才执行，且只写入当前工作空间内的相关位置。</pre>
 <h3>一次排查的提问示例</h3><pre>测试环境订单状态一直是处理中，订单号 TEST-20261020-001。
-后端目标分支：release/test；前端目标分支：release/test-ui。
-请先建立临时 worktree，再检查订单状态接口、Redis 缓存与 MQ 消费情况。
+请按默认分析分支建立临时 worktree，再检查订单状态接口、Redis 缓存与 MQ 消费情况。
 先只读分析，给出原因和解决方案。</pre>
-<h3>worktree 命令示例</h3><p>以下仅为操作参考，文档不会自动执行。请替换仓库、分支及时间后缀；origin 对应实际远端名。前后端不同分支时分别执行。</p><pre><code>git -C &lt;Git仓库根目录&gt; fetch origin
-# 目标分支可用时：
-git -C &lt;Git仓库根目录&gt; worktree add &lt;工作空间&gt;/worktrees/backend-20261020 release/test
-# 目标分支已占用时，基于目标分支创建临时分支：
-git -C &lt;Git仓库根目录&gt; worktree add -b diagnose/backend-20261020 &lt;工作空间&gt;/worktrees/backend-20261020 origin/release/test
-git -C &lt;工作空间&gt;/worktrees/backend-20261020 merge origin/release/test</code></pre></section>
+<h3>worktree 命令示例</h3><p>以下仅为操作参考，文档不会自动执行。请替换仓库根目录与时间后缀；origin 对应实际远端名。前后端仓库分别执行。</p><pre><code>git -C &lt;Git仓库根目录&gt; fetch origin
+# 基于最新远程兜底分支创建临时 worktree（--detach 不占用分支名）：
+git -C &lt;Git仓库根目录&gt; worktree add --detach &lt;工作空间&gt;/worktrees/backend-20261020 origin/dev/v6.0.X.X
+# 兜底分支已被其他 worktree 占用时，基于它创建临时分支：
+git -C &lt;Git仓库根目录&gt; worktree add -b diagnose/backend-20261020 &lt;工作空间&gt;/worktrees/backend-20261020 origin/dev/v6.0.X.X
+# 分析结束、确认无未保存成果后清理：
+git -C &lt;Git仓库根目录&gt; worktree remove &lt;工作空间&gt;/worktrees/backend-20261020</code></pre></section>
 <section id="mcp"><h2>AgentR MCP 配置</h2><p>复用 AgentR 官方项目文档 <code>doc/mcp-service.md</code> 中的通用 MCP 配置。这些端点使用 AgentR 已保存的连接，适合查询数据库、Redis、MQ 及日志排查。启动 AgentR 及所需后端后，在 Agent Studio「设置 → MCP → 在编辑器中打开」中保存以下内容：</p><pre><code>&lt;工作空间&gt;/.agents/mcps/.mcp.json</code></pre><button data-copy="mcp-config">复制 MCP 配置</button><pre id="mcp-config">{
   "mcpServers": {
     "agentr-rust": { "type": "http", "url": "http://127.0.0.1:8319/api/rust/mcp" },

@@ -61,16 +61,32 @@ async function send() {
   if (!content || busy.value) return
   sending.value = true
   error.value = ''
+  text.value = ''  // 发送即清空；失败时恢复原文避免丢失
   try {
     const data = await api.debugAgent(props.profile.id, sessionId.value, content)
     emit('message', data.message)
     if (data.reply) emit('message', data.reply)
-    if (text.value.trim() === content) text.value = ''
-  } catch (e) { error.value = e.message }
+  } catch (e) {
+    error.value = e.message
+    if (!text.value.trim()) text.value = content
+  }
   finally { sending.value = false; scroll() }
 }
 function onKey(event) {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send() }
+  if (event.key !== 'Enter' || event.isComposing) return
+  if (event.shiftKey) return  // 默认换行
+  if (event.ctrlKey || event.metaKey) {
+    // Ctrl/Cmd + Enter 在光标处换行
+    event.preventDefault()
+    const el = event.currentTarget
+    const start = el.selectionStart ?? text.value.length
+    const end = el.selectionEnd ?? start
+    text.value = text.value.slice(0, start) + '\n' + text.value.slice(end)
+    nextTick(() => { el.selectionStart = el.selectionEnd = start + 1 })
+    return
+  }
+  event.preventDefault()
+  send()
 }
 </script>
 
@@ -113,7 +129,7 @@ function onKey(event) {
         <p v-if="error" class="debug-error" role="alert">{{ error }}</p>
         <form class="debug-composer" @submit.prevent="send">
           <textarea v-model="text" aria-label="调试消息" rows="3" maxlength="20000" :disabled="busy" :placeholder="sessionId === 'init' ? '逐条回复需要确认的内容…' : '输入问题，调试该 Agent…'" @keydown="onKey"></textarea>
-          <footer><span>Enter 发送 · Shift + Enter 换行</span><button class="primary" :disabled="busy || !text.trim()">{{ busy ? 'AI 处理中…' : '发送' }}</button></footer>
+          <footer><span>Enter 发送 · Shift / Ctrl + Enter 换行</span><button class="primary" :disabled="busy || !text.trim()">{{ busy ? 'AI 处理中…' : '发送' }}</button></footer>
         </form>
       </section>
     </div>

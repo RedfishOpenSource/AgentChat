@@ -125,8 +125,14 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
 
     # 每次新建/保存都重新改写，包括内容未变、仅修改设置、调用方传了 instructions。
     existing = agent.agent_profiles.get(data["id"]) if body.id else None
-    data["init_interview"] = (existing or {}).get("init_interview") or (
-        {"status": "pending"} if existing is None else None)
+    previous_interview = (existing or {}).get("init_interview")
+    if existing is None:
+        data["init_interview"] = {"status": "pending"}
+    elif isinstance(previous_interview, dict) and previous_interview.get("status") in ("failed", "running"):
+        # 失败或被重启中断的问询，随本次保存自动重试；已完成的不重复问。
+        data["init_interview"] = {"status": "pending"}
+    else:
+        data["init_interview"] = previous_interview
     source = data["description"].strip() or data["instructions"].strip()
     if not source:
         raise HTTPException(status_code=400, detail="请填写 Agent 描述，用于 AI 角色改写")

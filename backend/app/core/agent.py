@@ -74,6 +74,12 @@ class AgentService:
                 profile.update(pending=False, rewrite_status="failed", rewrite_error="上次角色改写因服务重启中断，请重新保存")
                 if db:
                     db.save_agent_profile(profile)
+            interview = profile.get("init_interview")
+            if isinstance(interview, dict) and interview.get("status") == "running":
+                interview["status"] = "failed"
+                interview["error"] = "初始化问询因服务重启中断，请重新保存后重试"
+                if db:
+                    db.save_agent_profile(profile)
         self.session_resets = {
             (r["platform"], r["chat_id"]): r for r in (db.list_session_resets() if db else [])
         }

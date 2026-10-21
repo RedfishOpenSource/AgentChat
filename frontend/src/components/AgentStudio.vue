@@ -33,7 +33,7 @@ const form = reactive({
   id: '', name: '', description: '',
   engine: 'pi', workspace: '',
   capabilities: [], skills: [], knowledge_dir: '',
-  plan_before_execute: false, timeout: 300,
+  plan_before_execute: true, timeout: 300,
 })
 const formTab = ref('build') // build | settings
 const formError = ref('')
@@ -43,9 +43,14 @@ async function load() {
   try {
     const data = await api.agentProfiles()
     profiles.value = data.profiles || []
-    if (profiles.value.some(p => p.pending)) startPendingPoll()
+    if (needsPolling(profiles.value)) startPendingPoll()
     openInitInterviewAuto(profiles.value)
   } catch (e) { emit('toast', `Agent 配置加载失败: ${e.message}`) }
+}
+
+function needsPolling(list) {
+  // 角色改写与初始化问询都在后台异步执行，任一未完成就需要轮询。
+  return list.some(p => p.pending || ['pending', 'running'].includes(p.init_interview?.status))
 }
 
 function openInitInterviewAuto(list) {
@@ -70,25 +75,45 @@ let pendingTimer = null
 function startPendingPoll() {
   if (pendingTimer) return
   pendingTimer = setInterval(async () => {
-    if (!profiles.value.some((p) => p.pending)) { clearInterval(pendingTimer); pendingTimer = null; return }
+    if (!needsPolling(profiles.value)) { clearInterval(pendingTimer); pendingTimer = null; return }
     try {
       const data = await api.agentProfiles()
       const previous = profiles.value
       profiles.value = data.profiles || []
       for (const p of profiles.value) {
-        if (previous.find(old => old.id === p.id)?.pending && !p.pending) {
+        const old = previous.find(o => o.id === p.id)
+        if (old?.pending && !p.pending) {
           emit('toast', p.rewrite_status === 'failed' ? `角色改写失败：${p.rewrite_error}` : `「${p.name}」角色已重新改写并保存到 role.md`)
+        }
+        const oldInit = old?.init_interview?.status
+        if (oldInit === 'running' && ['done', 'failed'].includes(p.init_interview?.status)) {
+          emit('toast', p.init_interview.status === 'done'
+            ? `「${p.name}」初始化问询完成，请确认待确认问题`
+            : `「${p.name}」初始化问询失败：${p.init_interview.error || '未知原因'}`)
         }
       }
       openInitInterviewAuto(profiles.value)
+      if (!needsPolling(profiles.value)) { clearInterval(pendingTimer); pendingTimer = null }
     } catch { /* ignore */ }
   }, 2500)
 }
-onMounted(load)
-onUnmounted(() => clearInterval(pendingTimer))
+onMounted(() => { load(); window.addEventListener('click', onDocClick) })
+onUnmounted(() => { window.removeEventListener('click', onDocClick); clearInterval(pendingTimer) })
 
-function engineCommand(id) {
-  return ENGINES.find((e) => e.id === id)?.command || id
+function closeMenus() {
+  for (const menu of document.querySelectorAll('details.profile-menu[open]')) menu.open = false
+}
+function onMenuToggle(event) {
+  const details = event.currentTarget
+  if (!details.open) return
+  for (const menu of document.querySelectorAll('details.profile-menu[open]')) {
+    if (menu !== details) menu.open = false
+  }
+}
+function onDocClick(event) {
+  for (const menu of document.querySelectorAll('details.profile-menu[open]')) {
+    if (!menu.contains(event.target)) menu.open = false
+  }
 }
 
 function startCreate() {
@@ -97,7 +122,7 @@ function startCreate() {
     engine: 'pi', workspace: '',
     capabilities: [...CAPABILITIES],  // 基础能力默认全开
     skills: [], knowledge_dir: '',
-    plan_before_execute: false, timeout: 300,
+    plan_before_execute: true, timeout: 300,
   })
   skillUrl.value = ''
   formTab.value = 'build'
@@ -220,21 +245,26 @@ async function removeProfile(id) {
       <p class="hint">创建并维护 Agent 集合；创建并初始化完成后，Agent 会自动列出待确认的环境等问题，并在调试窗口中与用户逐条确认。</p>
 
     <div v-for="p in profiles" :key="p.id" class="profile-row">
-      <span class="p-name" :title="p.description || p.name">{{ p.name }}</span>
+      <div class="profile-line">
+        <span class="p-name" :title="p.description || p.name">{{ p.name }}</span>
+        <span class="grow"></span>
       <span v-if="p.pending" class="tag sync">后台处理中…</span>
       <template v-else>
         <span v-if="p.rewrite_status === 'failed'" class="tag bad" :title="p.rewrite_error">改写失败</span>
-        <span v-else class="tag" :class="p.available ? 'ok' : 'bad'" :title="p.available ? '' : '命令未检测到'">
-          {{ p.available ? engineCommand(p.engine) : '未检测到' }}
-        </span>
+        <span v-else-if="!p.available" class="tag bad" title="未检测到启动命令，请检查适配器安装">未检测到</span>
         <span v-if="p.init_interview?.status === 'running' || p.init_interview?.status === 'pending'" class="tag sync" title="正在初始化问询，完成后自动打开调试">初始化问询中…</span>
         <button v-else-if="p.init_interview?.status === 'done' && !p.init_interview.answered" class="tag init-tag" title="Agent 有待确认的问题，点击查看并回复" @click="openInitInterview(p)">待确认</button>
         <span v-else-if="p.init_interview?.status === 'failed'" class="tag bad" :title="p.init_interview.error">初始化问询失败</span>
       </template>
-      <span class="grow"></span>
-      <button class="sm" :disabled="p.pending || p.rewrite_status === 'failed'" @click="debugSession = ''; debugProfile = p">调试</button>
-      <button class="sm" @click="editProfile(p)">编辑</button>
-      <button class="sm danger" @click="removeProfile(p.id)">删除</button>
+      <details class="profile-menu" @toggle="onMenuToggle">
+        <summary class="menu-trigger" aria-label="更多操作" title="更多操作">⋯</summary>
+        <div class="profile-menu-actions">
+          <button :disabled="p.pending || p.rewrite_status === 'failed'" @click="closeMenus(); debugSession = ''; debugProfile = p">调试</button>
+          <button @click="closeMenus(); editProfile(p)">编辑</button>
+          <button class="danger" @click="closeMenus(); removeProfile(p.id)">删除</button>
+        </div>
+      </details>
+      </div>
     </div>
     <p v-if="!profiles.length" class="empty">还没有 Agent，点击下方创建。</p>
 
@@ -354,8 +384,18 @@ async function removeProfile(id) {
 .studio[open] > summary .chevron { transform: rotate(90deg); }
 .studio[open] > summary { margin-bottom: 4px; }
 .hint { font-size: 11px; color: var(--text-dim); margin: 6px 0 10px; line-height: 1.6; }
-.profile-row { display: flex; align-items: center; gap: 6px; padding: 7px 9px; margin-bottom: 6px; border: 1px solid var(--border-soft); border-radius: 6px; background: rgba(9, 13, 16, .4); }
-.p-name { flex: 1; min-width: 0; max-width: 120px; overflow: hidden; color: #dfe9ec; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.profile-row { display: flex; flex-direction: column; gap: 7px; padding: 8px 9px; margin-bottom: 6px; border: 1px solid var(--border-soft); border-radius: 6px; background: rgba(9, 13, 16, .4); }
+.profile-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.profile-menu { position: relative; flex: none; }
+.menu-trigger { list-style: none; cursor: pointer; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--text-muted); font-size: 13px; user-select: none; }
+.menu-trigger::-webkit-details-marker { display: none; }
+.menu-trigger:hover, .profile-menu[open] .menu-trigger { background: var(--panel-2); color: var(--text); }
+.profile-menu-actions { position: absolute; right: 0; top: 30px; z-index: 40; min-width: 92px; padding: 5px; display: flex; flex-direction: column; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); }
+.profile-menu-actions button { border: 0; background: transparent; text-align: left; padding: 7px 10px; border-radius: 6px; color: var(--text); font-size: 12px; }
+.profile-menu-actions button:hover { background: var(--bg); }
+.profile-menu-actions button.danger { color: var(--red); }
+.profile-menu-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.p-name { min-width: 0; overflow: hidden; color: #dfe9ec; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .grow { flex: 1; }
 .tag { padding: 1px 7px; border-radius: 4px; background: var(--panel-2); color: var(--text-dim); font-size: 10px; flex: none; }
 .tag.ok { color: var(--green); border-color: rgba(85, 201, 138, .3); }
@@ -363,8 +403,6 @@ async function removeProfile(id) {
 .tag.sync { color: var(--accent-strong); border-color: rgba(85, 184, 200, .35); animation: pulse 1.2s ease-in-out infinite; }
 .tag.init-tag { color: var(--accent-strong); border: 1px solid rgba(85, 184, 200, .45); cursor: pointer; }
 @keyframes pulse { 50% { opacity: .45; } }
-.sm { min-height: 26px; padding: 3px 9px; font-size: 11px; }
-.sm.danger { color: var(--red); }
 .empty { color: var(--text-muted); font-size: 11px; text-align: center; padding: 8px 0; }
 .full { width: 100%; }
 .mask { position: fixed; inset: 0; z-index: 70; background: rgba(4, 7, 10, .62); display: flex; align-items: center; justify-content: center; padding: 20px; }

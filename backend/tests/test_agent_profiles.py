@@ -215,7 +215,7 @@ for line in sys.stdin:
         assert r.status_code == 200
         assert agent.agent_profiles[agent_id]["init_interview"]["answered"] is True
 
-        # 重新保存：问询状态保留且不重跑
+        # 重新保存：已完成且已确认的问询不重跑
         r = client.post("/api/agent-profiles", json={**body, "id": agent_id})
         assert r.status_code == 200
         deadline = time.time() + 10
@@ -228,10 +228,33 @@ for line in sys.stdin:
         assert len(client.get("/api/messages", params={
             "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]) == 4
 
-    # 重启后问询状态与 init 会话记录仍在
+        # 失败的问询随重新保存自动重试
+        profile = agent.agent_profiles[agent_id]
+        profile["init_interview"] = {"status": "failed", "error": "模拟失败"}
+        agent.save_agent_profile(profile)
+        r = client.post("/api/agent-profiles", json={**body, "id": agent_id})
+        assert r.status_code == 200
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            iv = agent.agent_profiles[agent_id].get("init_interview") or {}
+            if iv.get("status") in ("done", "failed") and not agent.agent_profiles[agent_id].get("pending"):
+                break
+            time.sleep(0.2)
+        assert iv == {"status": "done"}, iv
+        assert len(client.get("/api/messages", params={
+            "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]) == 6
+
+    # 重启后问询状态保留；中断的 running 恢复为失败并提示重试
+    from app.persistence import SqliteStore
+    db = SqliteStore(db_path)
+    stored = db.list_agent_profiles()[0]
+    stored["init_interview"] = {"status": "running"}
+    db.save_agent_profile(stored)
+    db.close()
     with _client(db_path) as client:
         data = client.get("/api/agent-profiles").json()["profiles"][0]
-        assert data["init_interview"] == {"status": "done", "answered": True}
+        assert data["init_interview"]["status"] == "failed"
+        assert "重启" in data["init_interview"]["error"]
 
 
 def test_agent_profile_rejects_missing_workspace(tmp_path):

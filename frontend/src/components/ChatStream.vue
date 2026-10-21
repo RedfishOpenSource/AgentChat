@@ -57,21 +57,34 @@ async function sendToAI() {
   const content = composerText.value.trim()
   if (!chatId || !content || conversationBusy.value || resetBusy.value) return
   submitting[key] = true
+  composerDrafts[key] = ''  // 发送即清空；失败时恢复原文避免丢失
   try {
     const data = await api.contactChat(platform, chatId, content)
     emit('message', data.message)
     if (data.reply) emit('message', data.reply)
-    if (composerDrafts[key]?.trim() === content) composerDrafts[key] = ''
     emit('toast', data.reply?.meta?.error ? 'AI 生成失败，请查看消息中的原因' : 'AI 回复已生成，请审核草稿')
-  } catch (e) { emit('toast', `发送给 AI 失败：${e.message}`) }
+  } catch (e) {
+    if (!composerDrafts[key]?.trim()) composerDrafts[key] = content
+    emit('toast', `发送给 AI 失败：${e.message}`)
+  }
   finally { delete submitting[key] }
 }
 
 function onComposerKey(event) {
-  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+  if (event.key !== 'Enter' || event.isComposing) return
+  if (event.shiftKey) return  // 默认换行
+  if (event.ctrlKey || event.metaKey) {
+    // Ctrl/Cmd + Enter 在光标处换行
     event.preventDefault()
-    sendToAI()
+    const el = event.currentTarget
+    const start = el.selectionStart ?? composerText.value.length
+    const end = el.selectionEnd ?? start
+    composerText.value = composerText.value.slice(0, start) + '\n' + composerText.value.slice(end)
+    nextTick(() => { el.selectionStart = el.selectionEnd = start + 1 })
+    return
   }
+  event.preventDefault()
+  sendToAI()
 }
 
 const now = ref(Date.now())
@@ -339,7 +352,7 @@ function shortChat(id) {
         @keydown="onComposerKey"
       ></textarea>
       <div class="composer-actions">
-        <span>{{ conversationBusy ? 'AI 正在处理当前对话，请稍候…' : 'Enter 发送 · Shift + Enter 换行 · 回复生成后需审核' }}</span>
+        <span>{{ conversationBusy ? 'AI 正在处理当前对话，请稍候…' : 'Enter 发送 · Shift / Ctrl + Enter 换行 · 回复生成后需审核' }}</span>
         <button class="primary" type="submit" :disabled="!currentContact || !composerText.trim() || conversationBusy || resetBusy">
           {{ submitting[conversationKey] ? 'AI 处理中…' : '发送给 AI' }}
         </button>
