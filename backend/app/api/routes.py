@@ -82,13 +82,27 @@ async def _llm_role_prompt(settings, description: str) -> str:
     return await rewrite_role(settings, description)
 
 
-INIT_SESSION = "init"  # Agent 初始化问询的专用调试会话
+INIT_SESSION = "init"  # Agent 初始化问询与确认的专用调试会话
 INIT_INTERVIEW_PROMPT = (
     "初始化确认：请基于你的角色定义、工作空间文件、已安装 Skills、知识库与 MCP 配置，"
     "检查还有哪些信息需要用户确认或补充（例如：项目路径与目标分支、测试/生产环境的"
     "数据库/Redis/MQ 连接方式、技能所需的凭据或参数、回复与输出偏好）。"
     "请逐条编号列出问题（最多 8 条；没有则回答“暂无需要确认的内容”），每条附上你建议的默认值；"
     "只输出问题清单，不要执行任何修改操作。"
+    "后续确认规则：在与用户逐条确认的过程中，每轮回复后自主判断是否全部问题均已确认或补充完毕；"
+    "全部确认完毕时，在回复最末尾单独一行输出【全部确认完毕】；"
+    "只要仍有未确认的问题就继续追问，不要输出该标记。"
+)
+INTERVIEW_CONFIRMED_MARKER = "【全部确认完毕】"  # AI 自主判定全部待确认问题均已完毕的标记
+WORKTREE_PREP_PROMPT = (
+    "worktree 预建：请读取你的角色定义（role.md）中的项目仓库与分析分支信息。"
+    "若包含具体仓库路径与分析分支，则为每个仓库确保临时 worktree 就绪："
+    "先 git fetch origin；若当前工作空间 worktrees/ 下已存在该仓库的临时 worktree 则直接复用"
+    "（fetch 更新即可，不要重复创建）；否则执行 "
+    "git worktree add --detach <工作空间>/worktrees/<仓库名>-<当天日期> <分析分支> 创建，"
+    "分支被其他 worktree 占用时基于它创建临时分支再检出。"
+    "只创建或更新 worktree，不做其他操作；完成后仅输出各 worktree 的所在路径。"
+    "若角色定义中没有仓库与分析分支信息，仅回复：无需创建 worktree。"
 )
 
 
@@ -97,6 +111,13 @@ async def list_agent_profiles(request: Request):
     agent = _agent(request)
     profiles = []
     for p in agent.agent_profiles.values():
+        interview = p.get("init_interview")
+        if isinstance(interview, dict) and interview.get("status") == "done" and interview.get("answered"):
+            # 兼容旧数据：旧的 answered 布尔标记迁移为 confirmed 状态
+            interview["status"] = "confirmed"
+            import time as _time
+            interview.setdefault("confirmed_at", int(_time.time() * 1000))
+            agent.save_agent_profile(p)
         profiles.append({**p, "available": _engine_available(p.get("command", ""))})
     return {"profiles": profiles, "assignments": agent.agent_assignments_list()}
 
@@ -261,6 +282,18 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
             return "角色改写失败，请查看 Agent 的错误信息后重试"
         return "AI 角色已重新改写并写入 role.md"
 
+    async def _prepare_worktree() -> None:
+        """创建 Agent 后立即预建临时 worktree：由 Agent 依据角色定义中的仓库/分支信息自行执行，
+        结果落在工作空间 worktrees/ 下；失败不阻断保存与后续问询。"""
+        if not current() or "执行命令" not in (data.get("capabilities") or []):
+            return
+        try:
+            await agent.debug_chat(agent.agent_profiles[data["id"]], INIT_SESSION, WORKTREE_PREP_PROMPT)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 —— 预建失败仅记录日志，不影响 Agent 使用
+            logger.warning("[agent-worktree] 预建 worktree 失败 id=%s type=%s", data["id"], type(exc).__name__)
+
     async def _run_interview() -> None:
         """角色改写成功后，自动询问 Agent 有哪些待用户确认的信息，结果进入调试 init 会话。"""
         if data.get("init_interview", {}).get("status") != "pending" or not current():
@@ -272,9 +305,17 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
             ok = bool(reply and (reply.content or "").strip() and not (reply.meta or {}).get("error"))
             if not current():
                 return
-            data["init_interview"] = (
-                {"status": "done"} if ok else
-                {"status": "failed", "error": ((reply.meta or {}).get("error") if reply else "") or "Agent 未返回确认内容"})
+            text = (reply.content or "") if reply else ""
+            if ok and (INTERVIEW_CONFIRMED_MARKER in text or "暂无需要确认" in text):
+                # 初始回复即无待确认内容：直接进入已确认状态，不挂「待确认」标签
+                import time as _time
+                data["init_interview"] = {"status": "confirmed", "confirmed_at": int(_time.time() * 1000)}
+            elif ok:
+                data["init_interview"] = {"status": "done"}
+            else:
+                data["init_interview"] = {
+                    "status": "failed",
+                    "error": ((reply.meta or {}).get("error") if reply else "") or "Agent 未返回确认内容"}
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -292,8 +333,9 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
     sync_task = asyncio.create_task(_sync_prompts())
 
     async def _await_parallel_tail() -> None:
-        """等预热与同步汇合后再问询：保证工作空间文件与 Agent 会话就绪（失败不阻断）。"""
+        """等预热与同步汇合后，先预建 worktree 再问询：保证用户提问时 worktree 已就绪（失败均不阻断）。"""
         await asyncio.gather(warm_task, sync_task, return_exceptions=True)
+        await _prepare_worktree()
         await _run_interview()
 
     if body.sync_mode == "wait":
@@ -397,9 +439,12 @@ async def debug_agent_profile(agent_id: str, request: Request, body: AgentDebugR
     interview = profile.get("init_interview")
     current = agent.agent_profiles.get(agent_id)
     if (current is profile and body.session_id == INIT_SESSION
-            and isinstance(interview, dict)
-            and interview.get("status") == "done" and not interview.get("answered")):
-        interview["answered"] = True
+            and isinstance(interview, dict) and interview.get("status") == "done"
+            and reply is not None and INTERVIEW_CONFIRMED_MARKER in (reply.content or "")):
+        # 只有 AI 在确认对话中自主判定全部问题确认完毕（回复携带标记）时，才自动清除「待确认」状态
+        import time as _time
+        interview["status"] = "confirmed"
+        interview["confirmed_at"] = int(_time.time() * 1000)
         agent.save_agent_profile(profile)
     return {"message": incoming.model_dump(mode="json"),
             "reply": reply.model_dump(mode="json") if reply else None}

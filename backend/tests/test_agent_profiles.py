@@ -154,8 +154,8 @@ def test_startup_repairs_legacy_unmonitored_assignments(tmp_path):
         assert client.delete("/api/agent-profiles/legacy").status_code == 200
 
 
-def test_creation_runs_init_interview_and_marks_answered(tmp_path):
-    """创建后自动初始化问询：Agent 回复进入调试 init 会话；用户回复后标记已确认，重新保存不重跑。"""
+def test_creation_prepares_worktree_and_interview_confirms_by_ai(tmp_path):
+    """创建后先预建 worktree 再初始化问询；确认对话中由 AI 自主判定全部确认完毕后自动更新状态。"""
     import time
 
     fake_acp = r'''
@@ -175,10 +175,13 @@ for line in sys.stdin:
                           "result": {"sessionId": f"sess-{sessions}"}}), flush=True)
     elif msg.get("method") == "session/prompt":
         sid = msg["params"]["sessionId"]
+        text = f"[{sid}] 初始化确认清单：1. 项目路径 2. 目标分支"
+        if "都确认" in json.dumps(msg, ensure_ascii=False):
+            text += "\n【全部确认完毕】"
         print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
             "sessionId": sid,
             "update": {"sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": f"[{sid}] 初始化确认清单：1. 项目路径 2. 目标分支"}}}}), flush=True)
+                        "content": {"type": "text", "text": text}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"stopReason": "end_turn"}}), flush=True)
 '''
     db_path = str(tmp_path / "interview.db")
@@ -188,6 +191,7 @@ for line in sys.stdin:
     script.write_text(fake_acp, encoding="utf-8")
     body = {"name": "问询", "description": "初始化问询验证", "engine": "pi",
             "command": sys.executable, "args": str(script), "workspace": ws,
+            "capabilities": ["文件读写", "执行命令"],
             "sync_mode": "wait"}
     init_chat = None
     with _client(db_path) as client:
@@ -203,19 +207,21 @@ for line in sys.stdin:
                 break
             time.sleep(0.2)
         assert interview.get("status") == "done", interview
+        # 创建后先预建 worktree（预建指令），再初始化问询，同一 init 会话内顺序执行
         history = client.get("/api/messages", params={
             "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]
-        assert len(history) == 2
-        assert history[0]["direction"] == "in" and "初始化确认" in history[0]["content"]
-        assert history[-1]["direction"] == "out" and "目标分支" in history[-1]["content"]
+        assert len(history) == 4
+        assert "worktree" in history[0]["content"]
+        assert "初始化确认" in history[2]["content"]
+        assert "目标分支" in history[3]["content"]
 
-        # 用户在 init 会话回复 → 标记已确认
+        # 用户在 init 会话回复 → AI 判定全部确认完毕（回复携带标记）→ 状态自动更新为 confirmed
         r = client.post(f"/api/agent-profiles/{agent_id}/chat",
                         json={"session_id": "init", "content": "都确认，无补充"})
         assert r.status_code == 200
-        assert agent.agent_profiles[agent_id]["init_interview"]["answered"] is True
+        assert agent.agent_profiles[agent_id]["init_interview"]["status"] == "confirmed"
 
-        # 重新保存：已完成且已确认的问询不重跑
+        # 重新保存：已确认的问询不重跑，confirmed 状态保留
         r = client.post("/api/agent-profiles", json={**body, "id": agent_id})
         assert r.status_code == 200
         deadline = time.time() + 10
@@ -223,10 +229,9 @@ for line in sys.stdin:
             if not agent.agent_profiles[agent_id].get("pending"):
                 break
             time.sleep(0.2)
-        assert agent.agent_profiles[agent_id]["init_interview"] == {
-            "status": "done", "answered": True}
+        assert agent.agent_profiles[agent_id]["init_interview"]["status"] == "confirmed"
         assert len(client.get("/api/messages", params={
-            "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]) == 4
+            "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]) == 6
 
         # 失败的问询随重新保存自动重试
         profile = agent.agent_profiles[agent_id]
@@ -240,12 +245,20 @@ for line in sys.stdin:
             if iv.get("status") in ("done", "failed") and not agent.agent_profiles[agent_id].get("pending"):
                 break
             time.sleep(0.2)
-        assert iv == {"status": "done"}, iv
+        assert iv.get("status") == "done", iv
         assert len(client.get("/api/messages", params={
-            "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]) == 6
+            "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]) == 10
 
-    # 重启后问询状态保留；中断的 running 恢复为失败并提示重试
+    # 重启后：旧数据（done+answered）读取时迁移为 confirmed；running 恢复为失败并提示重试
     from app.persistence import SqliteStore
+    db = SqliteStore(db_path)
+    stored = db.list_agent_profiles()[0]
+    stored["init_interview"] = {"status": "done", "answered": True}
+    db.save_agent_profile(stored)
+    db.close()
+    with _client(db_path) as client:
+        data = client.get("/api/agent-profiles").json()["profiles"][0]
+        assert data["init_interview"]["status"] == "confirmed"
     db = SqliteStore(db_path)
     stored = db.list_agent_profiles()[0]
     stored["init_interview"] = {"status": "running"}

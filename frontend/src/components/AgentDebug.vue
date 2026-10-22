@@ -103,7 +103,7 @@ function onKey(event) {
           <button aria-label="关闭调试" @click="emit('close')">✕</button>
         </header>
         <p class="debug-note">使用该 Agent 当前保存的配置、工作空间与 Skills。此处为独立调试对话。</p>
-        <p v-if="sessionId === 'init'" class="debug-init-note">初始化确认：以下是 Agent 初始化后需要你确认的问题，请逐条回复；确认完成后可「新建会话」进入常规调试。</p>
+        <p v-if="sessionId === 'init'" class="debug-init-note">初始化确认：以下是 Agent 初始化后需要你确认的问题，请逐条回复；AI 判定全部确认完毕后，列表「待确认」标记会自动消失，之后可「新建会话」进入常规调试。</p>
         <div ref="bodyEl" class="debug-history">
           <p v-if="!messages.length && !busy" class="debug-empty">输入问题，开始调试 {{ profile.name }}</p>
           <article v-for="m in messages" :key="m.id" class="debug-message" :class="m.direction">

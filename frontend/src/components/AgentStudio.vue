@@ -49,13 +49,14 @@ async function load() {
 }
 
 function needsPolling(list) {
-  // 角色改写与初始化问询都在后台异步执行，任一未完成就需要轮询。
-  return list.some(p => p.pending || ['pending', 'running'].includes(p.init_interview?.status))
+  // 角色改写与初始化问询在后台异步执行；done = 待用户在确认对话中逐条确认，
+  // 需持续轮询以便 AI 自主判定全部确认完毕（status → confirmed）后自动更新「待确认」状态。
+  return list.some(p => p.pending || ['pending', 'running', 'done'].includes(p.init_interview?.status))
 }
 
 function openInitInterviewAuto(list) {
   // 初始化问询完成后自动打开调试窗口，把待确认问题展示给用户（每个浏览器会话只自动弹一次）。
-  const target = list.find(p => p.init_interview?.status === 'done' && !p.init_interview.answered)
+  const target = list.find(p => p.init_interview?.status === 'done')
   if (!target || debugProfile.value) return
   const key = `chatagent:init-interview-opened:${target.id}`
   try {
@@ -90,6 +91,9 @@ function startPendingPoll() {
           emit('toast', p.init_interview.status === 'done'
             ? `「${p.name}」初始化问询完成，请确认待确认问题`
             : `「${p.name}」初始化问询失败：${p.init_interview.error || '未知原因'}`)
+        }
+        if (oldInit === 'done' && p.init_interview?.status === 'confirmed') {
+          emit('toast', `「${p.name}」待确认问题已全部确认`)
         }
       }
       openInitInterviewAuto(profiles.value)
@@ -135,6 +139,26 @@ function startCreate() {
 function editProfile(p) {
   Object.assign(form, {
     id: p.id, name: p.name, description: p.description || '',
+    engine: p.engine || 'pi', workspace: p.workspace || '',
+    capabilities: [...(p.capabilities || [])],
+    skills: [...(p.skills || [])],
+    knowledge_dir: p.knowledge_dir || '',
+    plan_before_execute: !!p.plan_before_execute, timeout: p.timeout || 300,
+  })
+  skillUrl.value = ''
+  formTab.value = 'build'
+  formError.value = ''
+  fieldErrors.name = false
+  fieldErrors.workspace = false
+  showForm.value = true
+}
+
+function duplicateProfile(p) {
+  // 复制 = 以原 Agent 的配置预填「创建 Agent」弹窗；id 置空，保存时后端会生成新 id，不会覆盖原件。
+  Object.assign(form, {
+    id: '',
+    name: `${p.name} 副本`,
+    description: p.description || '',
     engine: p.engine || 'pi', workspace: p.workspace || '',
     capabilities: [...(p.capabilities || [])],
     skills: [...(p.skills || [])],
@@ -253,7 +277,7 @@ async function removeProfile(id) {
         <span v-if="p.rewrite_status === 'failed'" class="tag bad" :title="p.rewrite_error">改写失败</span>
         <span v-else-if="!p.available" class="tag bad" title="未检测到启动命令，请检查适配器安装">未检测到</span>
         <span v-if="p.init_interview?.status === 'running' || p.init_interview?.status === 'pending'" class="tag sync" title="正在初始化问询，完成后自动打开调试">初始化问询中…</span>
-        <button v-else-if="p.init_interview?.status === 'done' && !p.init_interview.answered" class="tag init-tag" title="Agent 有待确认的问题，点击查看并回复" @click="openInitInterview(p)">待确认</button>
+        <button v-else-if="p.init_interview?.status === 'done'" class="tag init-tag" title="Agent 有待确认的问题，点击查看并回复；全部确认后自动消失" @click="openInitInterview(p)">待确认</button>
         <span v-else-if="p.init_interview?.status === 'failed'" class="tag bad" :title="p.init_interview.error">初始化问询失败</span>
       </template>
       <details class="profile-menu" @toggle="onMenuToggle">
@@ -261,6 +285,7 @@ async function removeProfile(id) {
         <div class="profile-menu-actions">
           <button :disabled="p.pending || p.rewrite_status === 'failed'" @click="closeMenus(); debugSession = ''; debugProfile = p">调试</button>
           <button @click="closeMenus(); editProfile(p)">编辑</button>
+          <button :disabled="p.pending" @click="closeMenus(); duplicateProfile(p)">复制</button>
           <button class="danger" @click="closeMenus(); removeProfile(p.id)">删除</button>
         </div>
       </details>
