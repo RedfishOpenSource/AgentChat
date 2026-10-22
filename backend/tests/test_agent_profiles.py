@@ -72,11 +72,15 @@ def test_agent_profile_crud_and_assignment_persist(tmp_path):
         assert r.status_code == 400
         assert "正在被监听联系人使用" in r.json()["detail"]
 
-        # 角色定义写入 .agents/memory/role.md；skills 安装；mcp 初始化
+        # 角色定义写入 .agents/memory/role.md；skills 后台安装；mcp 初始化
         role_file = _Path(ws) / ".agents" / "memory" / "role.md"
         assert role_file.is_file()
         assert "客服助手" in role_file.read_text(encoding="utf-8")
         installed = _Path(ws) / ".agents" / "skills" / "skill-report" / "SKILL.md"
+        import time
+        deadline = time.time() + 10
+        while time.time() < deadline and not installed.is_file():
+            time.sleep(0.1)
         assert installed.is_file()
         mcp_file = _Path(ws) / ".agents" / "mcps" / ".mcp.json"
         assert mcp_file.is_file() and "mcpServers" in mcp_file.read_text(encoding="utf-8")
@@ -90,8 +94,9 @@ def test_agent_profile_crud_and_assignment_persist(tmp_path):
         agent = client.app.state.agent
         profile = agent.profile_for(__import__("app.models", fromlist=["Platform"]).Platform.WECHAT, "文件传输助手")
         assert profile is not None and profile["name"] == "客服助手"
-        # 未绑定的联系人回退默认引擎
-        assert agent.profile_for(__import__("app.models", fromlist=["Platform"]).Platform.WECHAT, "其他人") is None
+        # 未绑定的联系人回退第一个已创建的 Agent（工作目录以 Agent 配置为准，而非全局默认引擎）
+        fallback = agent.profile_for(__import__("app.models", fromlist=["Platform"]).Platform.WECHAT, "其他人")
+        assert fallback is not None and fallback["name"] == "客服助手"
 
         # 解绑后才能删除
         client.put("/api/agent-assignments", json={
@@ -197,6 +202,8 @@ for line in sys.stdin:
     with _client(db_path) as client:
         r = client.post("/api/agent-profiles", json=body)
         assert r.status_code == 200, r.text
+        # 保存即返回，Agent 立即可用（不设 pending 门禁）
+        assert r.json()["profile"]["pending"] is False
         agent_id = r.json()["profile"]["id"]
         init_chat = f"debug:{agent_id}:init"
         agent = client.app.state.agent
@@ -207,13 +214,13 @@ for line in sys.stdin:
                 break
             time.sleep(0.2)
         assert interview.get("status") == "done", interview
-        # 创建后先预建 worktree（预建指令），再初始化问询，同一 init 会话内顺序执行
+        # 问询不等润色、优先执行（问询只依赖预热+模板同步），随后预建 worktree，同一 init 会话内顺序执行
         history = client.get("/api/messages", params={
             "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]
         assert len(history) == 4
-        assert "worktree" in history[0]["content"]
-        assert "初始化确认" in history[2]["content"]
-        assert "目标分支" in history[3]["content"]
+        assert "初始化确认" in history[0]["content"]
+        assert "目标分支" in history[1]["content"]
+        assert "worktree" in history[2]["content"]
 
         # 用户在 init 会话回复 → AI 判定全部确认完毕（回复携带标记）→ 状态自动更新为 confirmed
         r = client.post(f"/api/agent-profiles/{agent_id}/chat",
@@ -221,33 +228,36 @@ for line in sys.stdin:
         assert r.status_code == 200
         assert agent.agent_profiles[agent_id]["init_interview"]["status"] == "confirmed"
 
-        # 重新保存：已确认的问询不重跑，confirmed 状态保留
+        # 重新保存：已确认的问询不重跑，confirmed 状态保留；后台收尾会再次预建 worktree（+2 条）
         r = client.post("/api/agent-profiles", json={**body, "id": agent_id})
         assert r.status_code == 200
-        deadline = time.time() + 10
+        iv, msgs = {}, []
+        deadline = time.time() + 15
         while time.time() < deadline:
-            if not agent.agent_profiles[agent_id].get("pending"):
+            iv = agent.agent_profiles[agent_id].get("init_interview") or {}
+            msgs = client.get("/api/messages", params={
+                "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]
+            if len(msgs) >= 8 and iv.get("status") == "confirmed":
                 break
             time.sleep(0.2)
-        assert agent.agent_profiles[agent_id]["init_interview"]["status"] == "confirmed"
-        assert len(client.get("/api/messages", params={
-            "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]) == 6
+        assert iv.get("status") == "confirmed" and len(msgs) == 8, (iv, len(msgs))
 
-        # 失败的问询随重新保存自动重试
+        # 失败的问询随重新保存自动重试（重试前会再次预建 worktree）
         profile = agent.agent_profiles[agent_id]
         profile["init_interview"] = {"status": "failed", "error": "模拟失败"}
         agent.save_agent_profile(profile)
         r = client.post("/api/agent-profiles", json={**body, "id": agent_id})
         assert r.status_code == 200
-        deadline = time.time() + 20
+        deadline = time.time() + 30
         while time.time() < deadline:
             iv = agent.agent_profiles[agent_id].get("init_interview") or {}
-            if iv.get("status") in ("done", "failed") and not agent.agent_profiles[agent_id].get("pending"):
+            msgs = client.get("/api/messages", params={
+                "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]
+            if len(msgs) >= 12 and iv.get("status") in ("done", "failed"):
                 break
             time.sleep(0.2)
         assert iv.get("status") == "done", iv
-        assert len(client.get("/api/messages", params={
-            "platform": "web", "chat_id": init_chat, "limit": 50}).json()["messages"]) == 10
+        assert len(msgs) == 12
 
     # 重启后：旧数据（done+answered）读取时迁移为 confirmed；running 恢复为失败并提示重试
     from app.persistence import SqliteStore

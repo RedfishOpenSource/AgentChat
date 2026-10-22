@@ -158,14 +158,17 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
     if not source:
         raise HTTPException(status_code=400, detail="请填写 Agent 描述，用于 AI 角色改写")
     revision = uuid.uuid4().hex
+    # AgentR 式极速创建：保存即用原始描述作为角色定义，Agent 立即可用（不设 pending 门禁）；
+    # LLM 改写仅在后台润色，失败也不影响使用。
     data.update(description_raw=source, rewrite_revision=revision,
-                rewrite_status="pending", rewrite_error="", pending=True)
-    data["instructions"] = (existing or {}).get("instructions", "")
+                rewrite_status="pending", rewrite_error="", pending=False)
+    data["instructions"] = source
     ws = _Path(data["workspace"]).expanduser()
     role_file = ws / ".agents" / "memory" / "role.md"
     data["role_file"] = str(role_file)
 
-    # Skills 落地：URL → git clone；本地目录 → 复制到 <ws>/.agents/skills/
+    # Skills：同步仅做快速校验（非法参数立即 400 反馈弹窗），实际安装（git clone / 复制）
+    # 转入后台线程并行执行，不阻塞保存响应；结果通过 skills_status/skills_error 回传。
     import shutil as _shutil
     import subprocess as _subprocess
 
@@ -174,36 +177,59 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
         skills_root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"创建 skills 目录失败: {exc}") from None
-    provisioned: list[str] = []
-    for src in data.get("skills", []):
-        src = str(src).strip()
-        if not src:
-            continue
-        if src.startswith(("http://", "https://", "git@")):
-            name = src.rstrip("/").split("/")[-1].removesuffix(".git")
-            dest = skills_root / name
-            if not dest.exists():
-                try:
-                    r = _subprocess.run(
-                        ["git", "clone", "--depth", "1", src, str(dest)],
-                        capture_output=True, text=True, timeout=180, check=False,
-                    )
-                except (OSError, _subprocess.TimeoutExpired) as exc:
-                    raise HTTPException(status_code=400, detail=f"拉取 skill 失败: {src}: {exc}") from None
-                if r.returncode:
-                    raise HTTPException(status_code=400, detail=f"拉取 skill 失败: {src}: {(r.stderr or r.stdout)[-250:]}")
-        else:
-            sp = _Path(src).expanduser()
-            if not sp.is_dir():
-                raise HTTPException(status_code=400, detail=f"skill 目录不存在: {src}")
-            dest = skills_root / sp.name
-            if sp.resolve() != dest.resolve():
-                if dest.resolve().is_relative_to(sp.resolve()) or sp.resolve().is_relative_to(dest.resolve()):
+
+    def _install_skills() -> None:
+        """阻塞 IO（git clone / copytree），仅供后台线程调用。"""
+        for src in data.get("skills", []):
+            src = str(src).strip()
+            if not src:
+                continue
+            if src.startswith(("http://", "https://", "git@")):
+                name = src.rstrip("/").split("/")[-1].removesuffix(".git")
+                dest = skills_root / name
+                if not dest.exists():
+                    try:
+                        r = _subprocess.run(
+                            ["git", "clone", "--depth", "1", src, str(dest)],
+                            capture_output=True, text=True, timeout=180, check=False,
+                        )
+                    except (OSError, _subprocess.TimeoutExpired) as exc:
+                        raise ValueError(f"拉取 skill 失败: {src}: {exc}") from None
+                    if r.returncode:
+                        raise ValueError(f"拉取 skill 失败: {src}: {(r.stderr or r.stdout)[-250:]}")
+            else:
+                sp = _Path(src).expanduser()
+                if not sp.is_dir():
+                    raise ValueError(f"skill 目录不存在: {src}")
+                dest = skills_root / sp.name
+                if sp.resolve() != dest.resolve():
+                    if dest.resolve().is_relative_to(sp.resolve()) or sp.resolve().is_relative_to(dest.resolve()):
+                        raise ValueError("Skill 源目录与安装目录不能互相包含")
+                    if dest.exists():
+                        _shutil.rmtree(dest)
+                    _shutil.copytree(sp, dest)
+
+    def _validate_skills() -> None:
+        for src in data.get("skills", []):
+            src = str(src).strip()
+            if not src:
+                continue
+            if src.startswith(("http://", "https://", "git@")):
+                name = src.rstrip("/").split("/")[-1].removesuffix(".git")
+                if not name or any(ch in name for ch in ':*?"<>|'):
+                    raise HTTPException(status_code=400, detail=f"Skill 名称无效: {src}")
+            else:
+                sp = _Path(src).expanduser()
+                if not sp.is_dir():
+                    raise HTTPException(status_code=400, detail=f"skill 目录不存在: {src}")
+                dest = skills_root / sp.name
+                if sp.resolve() != dest.resolve() and (
+                    dest.resolve().is_relative_to(sp.resolve()) or sp.resolve().is_relative_to(dest.resolve())):
                     raise HTTPException(status_code=400, detail="Skill 源目录与安装目录不能互相包含")
-                if dest.exists():
-                    _shutil.rmtree(dest)
-                _shutil.copytree(sp, dest)
-        provisioned.append(dest.name)
+
+    _validate_skills()
+    data["skills_status"] = "pending" if data.get("skills") else ""
+    data["skills_error"] = ""
     data["skills_dir"] = str(skills_root)
 
     # MCP 配置文件：<ws>/.agents/mcps/.mcp.json（不存在则初始化）
@@ -216,14 +242,21 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
         raise HTTPException(status_code=500, detail=f"初始化 MCP 配置失败: {exc}") from None
     data["mcp_file"] = str(mcp_file)
 
+    # role.md 立即用原始描述落盘（原子替换）：保存返回后 Agent 即刻可用，无需等 LLM 改写。
+    from ..role_prompts import write_role_file
+    try:
+        write_role_file(role_file, data["name"], source)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"写入角色文件失败: {exc}") from None
+
     old_task = agent.profile_tasks.pop(data["id"], None)
     if old_task:
         old_task.cancel()
     agent.save_agent_profile(dict(data))
 
-    # ---- 后台收尾：Agent 进程预热 + 提示词同步 + AI 角色改写 + 初始化问询 ----
-    # 预热/同步与角色改写三者并行，问询前汇合；创建到问询完成的总耗时从
-    # 「改写 → 同步 → 冷启动 + 问询」的串行链缩短为 max(改写, 同步, 预热) + 问询。
+    # ---- 后台并行收尾：四路任务同时启动，互不阻塞 ----
+    #   角色润色(LLM) ∥ 进程预热 ∥ 提示词同步 ∥ Skills 安装(线程池)
+    #   问询链只等「预热+模板同步」（原始角色已落盘，无需等润色）；问询完成后再预建 worktree。
     import time as _time
     from ..prompts_sync import mark_synced, prompts_recent, sync_workspace_prompts
 
@@ -254,6 +287,7 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
             logger.info("[agent-warmup] 预热未完成(%s)，首次使用将现场启动", str(exc)[:120])
 
     async def _finalize() -> str:
+        """后台角色润色：LLM 优化描述并更新 role.md；失败不影响使用（原始描述已生效）。"""
         from ..role_prompts import RoleRewriteError, write_role_file
         try:
             optimized = await _llm_role_prompt(agent.settings, source)
@@ -262,25 +296,23 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
             if not current():
                 return "该保存任务已被新版本替代"
             write_role_file(role_file, data["name"], optimized)
-            data.update(description=optimized, instructions=optimized, pending=False,
+            data.update(description=optimized, instructions=optimized,
                         rewrite_status="succeeded", rewrite_error="",
                         rewritten_at=int(_time.time() * 1000))
             agent.save_agent_profile(dict(data))
         except asyncio.CancelledError:
             if current():
-                data.update(pending=False, rewrite_status="failed", rewrite_error="角色改写被中断，请重新保存")
+                data.update(rewrite_status="failed", rewrite_error="角色改写被中断，请重新保存")
                 agent.save_agent_profile(dict(data))
             raise
         except Exception as exc:
             if current():
                 reason = str(exc) if isinstance(exc, RoleRewriteError) else "角色文件写入或改写失败，请重新保存并检查服务日志"
-                data.update(pending=False, rewrite_status="failed", rewrite_error=reason)
+                data.update(rewrite_status="failed", rewrite_error=reason)
                 agent.save_agent_profile(dict(data))
-                # 改写失败后预热的进程不可用（引擎会被 pending/failed 拦截），及时回收避免僵尸进程
-                agent.discard_profile_engine(data["id"])
-            logger.warning("[agent-role] 改写失败 id=%s type=%s", data["id"], type(exc).__name__)
-            return "角色改写失败，请查看 Agent 的错误信息后重试"
-        return "AI 角色已重新改写并写入 role.md"
+            logger.warning("[agent-role] 润色失败 id=%s type=%s", data["id"], type(exc).__name__)
+            return "角色润色失败：已保留原始描述，Agent 可正常使用；可重新保存重试"
+        return "AI 角色已重新润色并写入 role.md"
 
     async def _prepare_worktree() -> None:
         """创建 Agent 后立即预建临时 worktree：由 Agent 依据角色定义中的仓库/分支信息自行执行，
@@ -295,7 +327,7 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
             logger.warning("[agent-worktree] 预建 worktree 失败 id=%s type=%s", data["id"], type(exc).__name__)
 
     async def _run_interview() -> None:
-        """角色改写成功后，自动询问 Agent 有哪些待用户确认的信息，结果进入调试 init 会话。"""
+        """预热与模板同步就绪后，自动询问 Agent 有哪些待用户确认的信息（不等 LLM 润色，原始角色已生效），结果进入调试 init 会话。"""
         if data.get("init_interview", {}).get("status") != "pending" or not current():
             return
         data["init_interview"] = {"status": "running"}
@@ -328,32 +360,53 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
         if agent.profile_tasks.get(data["id"]) is completed:
             agent.profile_tasks.pop(data["id"], None)
 
-    # 保存后立即并行启动：进程预热 + 提示词同步（与角色改写同时进行）
+    async def _install_skills_task() -> None:
+        """后台线程安装 Skills；失败记录到 skills_status/skills_error，不影响 Agent 使用。"""
+        if not data.get("skills"):
+            return
+        try:
+            await asyncio.to_thread(_install_skills)
+            if current():
+                data.update(skills_status="succeeded", skills_error="")
+                agent.save_agent_profile(dict(data))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[agent-skills] 后台安装失败 id=%s: %s", data["id"], str(exc)[:160])
+            if current():
+                data.update(skills_status="failed", skills_error=str(exc)[:200])
+                agent.save_agent_profile(dict(data))
+
+    async def _interview_chain() -> None:
+        """问询只依赖预热与模板同步；问询完成后预建 worktree（失败均不阻断）。"""
+        await asyncio.gather(warm_task, sync_task, return_exceptions=True)
+        await _run_interview()
+        await _prepare_worktree()
+
+    # 保存返回后立即并行启动全部后台子任务
+    rewrite_task = asyncio.create_task(_finalize())
     warm_task = asyncio.create_task(_warmup_engine())
     sync_task = asyncio.create_task(_sync_prompts())
+    skills_task = asyncio.create_task(_install_skills_task())
+    chain_task = asyncio.create_task(_interview_chain())
 
-    async def _await_parallel_tail() -> None:
-        """等预热与同步汇合后，先预建 worktree 再问询：保证用户提问时 worktree 已就绪（失败均不阻断）。"""
-        await asyncio.gather(warm_task, sync_task, return_exceptions=True)
-        await _prepare_worktree()
-        await _run_interview()
+    async def _tail() -> None:
+        """总收尾任务：重新保存取消本任务时，连带取消全部后台子任务。"""
+        children = [rewrite_task, warm_task, sync_task, skills_task, chain_task]
+        try:
+            await asyncio.gather(*children, return_exceptions=True)
+        except asyncio.CancelledError:
+            for task in children:
+                task.cancel()
+            raise
 
+    tail_task = asyncio.create_task(_tail())
+    agent.profile_tasks[data["id"]] = tail_task
+    tail_task.add_done_callback(forget)
+    sync_note = "Agent 已保存并立即可用；角色润色、Skills 安装与初始化问询在后台并行进行"
     if body.sync_mode == "wait":
-        sync_note = await _finalize()
-        if data.get("init_interview", {}).get("status") == "pending" and current():
-            interview_task = asyncio.create_task(_await_parallel_tail())
-            agent.profile_tasks[data["id"]] = interview_task
-            interview_task.add_done_callback(forget)
-            sync_note += "；正在初始化问询，完成后请打开调试确认待确认内容"
-    else:
-        async def _finalize_and_interview():
-            note = await _finalize()
-            await _await_parallel_tail()
-            return note
-        task = asyncio.create_task(_finalize_and_interview())
-        agent.profile_tasks[data["id"]] = task
-        task.add_done_callback(forget)
-        sync_note = "已触发 AI 角色重新改写，请等待处理结果"
+        # 兼容旧语义：仅等待角色润色完成再返回；其余仍在后台进行。
+        sync_note = await rewrite_task
 
     return {
         "profile": {**data, "available": _engine_available(data["command"])},

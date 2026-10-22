@@ -49,9 +49,10 @@ async function load() {
 }
 
 function needsPolling(list) {
-  // 角色改写与初始化问询在后台异步执行；done = 待用户在确认对话中逐条确认，
-  // 需持续轮询以便 AI 自主判定全部确认完毕（status → confirmed）后自动更新「待确认」状态。
-  return list.some(p => p.pending || ['pending', 'running', 'done'].includes(p.init_interview?.status))
+  // 角色润色与初始化问询在后台异步执行，任一未完成就需要轮询；
+  // done = 待用户在确认对话中逐条确认，需持续轮询以便 AI 自主判定全部确认完毕后自动更新状态。
+  return list.some(p => p.pending || p.rewrite_status === 'pending' || p.skills_status === 'pending'
+    || ['pending', 'running', 'done'].includes(p.init_interview?.status))
 }
 
 function openInitInterviewAuto(list) {
@@ -83,8 +84,15 @@ function startPendingPoll() {
       profiles.value = data.profiles || []
       for (const p of profiles.value) {
         const old = previous.find(o => o.id === p.id)
-        if (old?.pending && !p.pending) {
-          emit('toast', p.rewrite_status === 'failed' ? `角色改写失败：${p.rewrite_error}` : `「${p.name}」角色已重新改写并保存到 role.md`)
+        if (old?.rewrite_status === 'pending' && ['succeeded', 'failed'].includes(p.rewrite_status)) {
+          emit('toast', p.rewrite_status === 'failed'
+            ? `「${p.name}」角色润色失败：${p.rewrite_error}（原始描述已生效，可正常使用）`
+            : `「${p.name}」角色已润色并保存到 role.md`)
+        }
+        if (old?.skills_status === 'pending' && ['succeeded', 'failed'].includes(p.skills_status)) {
+          emit('toast', p.skills_status === 'failed'
+            ? `「${p.name}」Skills 安装失败：${p.skills_error}`
+            : `「${p.name}」Skills 安装完成`)
         }
         const oldInit = old?.init_interview?.status
         if (oldInit === 'running' && ['done', 'failed'].includes(p.init_interview?.status)) {
@@ -272,18 +280,18 @@ async function removeProfile(id) {
       <div class="profile-line">
         <span class="p-name" :title="p.description || p.name">{{ p.name }}</span>
         <span class="grow"></span>
-      <span v-if="p.pending" class="tag sync">后台处理中…</span>
-      <template v-else>
-        <span v-if="p.rewrite_status === 'failed'" class="tag bad" :title="p.rewrite_error">改写失败</span>
-        <span v-else-if="!p.available" class="tag bad" title="未检测到启动命令，请检查适配器安装">未检测到</span>
-        <span v-if="p.init_interview?.status === 'running' || p.init_interview?.status === 'pending'" class="tag sync" title="正在初始化问询，完成后自动打开调试">初始化问询中…</span>
-        <button v-else-if="p.init_interview?.status === 'done'" class="tag init-tag" title="Agent 有待确认的问题，点击查看并回复；全部确认后自动消失" @click="openInitInterview(p)">待确认</button>
-        <span v-else-if="p.init_interview?.status === 'failed'" class="tag bad" :title="p.init_interview.error">初始化问询失败</span>
-      </template>
+      <span v-if="p.rewrite_status === 'pending'" class="tag sync" title="AI 正在后台润色角色描述；润色期间 Agent 可正常使用">角色润色中…</span>
+      <span v-if="p.rewrite_status === 'failed'" class="tag bad" :title="`${p.rewrite_error || ''}（原始描述已生效，Agent 可正常使用）`">润色失败</span>
+      <span v-if="p.skills_status === 'pending'" class="tag sync" title="正在后台安装 Skills，不影响 Agent 使用">Skills 安装中…</span>
+      <span v-if="p.skills_status === 'failed'" class="tag bad" :title="p.skills_error">Skills 安装失败</span>
+      <span v-if="!p.available" class="tag bad" title="未检测到启动命令，请检查适配器安装">未检测到</span>
+      <span v-if="p.init_interview?.status === 'running' || p.init_interview?.status === 'pending'" class="tag sync" title="正在初始化问询，完成后自动打开调试">初始化问询中…</span>
+      <button v-else-if="p.init_interview?.status === 'done'" class="tag init-tag" title="Agent 有待确认的问题，点击查看并回复；全部确认后自动消失" @click="openInitInterview(p)">待确认</button>
+      <span v-else-if="p.init_interview?.status === 'failed'" class="tag bad" :title="p.init_interview.error">初始化问询失败</span>
       <details class="profile-menu" @toggle="onMenuToggle">
         <summary class="menu-trigger" aria-label="更多操作" title="更多操作">⋯</summary>
         <div class="profile-menu-actions">
-          <button :disabled="p.pending || p.rewrite_status === 'failed'" @click="closeMenus(); debugSession = ''; debugProfile = p">调试</button>
+          <button :disabled="p.pending" @click="closeMenus(); debugSession = ''; debugProfile = p">调试</button>
           <button @click="closeMenus(); editProfile(p)">编辑</button>
           <button :disabled="p.pending" @click="closeMenus(); duplicateProfile(p)">复制</button>
           <button class="danger" @click="closeMenus(); removeProfile(p.id)">删除</button>
@@ -309,7 +317,7 @@ async function removeProfile(id) {
           <label>名称 *<input v-model.trim="form.name" :class="{ invalid: fieldErrors.name }" placeholder="如：客服助手" @input="fieldErrors.name = false" />
             <span v-if="fieldErrors.name" class="field-err">名称为必填项</span>
           </label>
-          <label>描述 *（每次保存都由 AI 重新改写）<textarea v-model="form.description" :class="{ invalid: fieldErrors.description }" rows="6" placeholder="描述这个 Agent 负责做什么：比如「售后客服，负责回答退货、报销流程问题，回复简短友好」" @input="fieldErrors.description = false" /></label>
+          <label>描述 *（保存即生效；AI 随后在后台润色）<textarea v-model="form.description" :class="{ invalid: fieldErrors.description }" rows="6" placeholder="描述这个 Agent 负责做什么：比如「售后客服，负责回答退货、报销流程问题，回复简短友好」" @input="fieldErrors.description = false" /></label>
           <p v-if="profiles.find(p => p.id === form.id)?.rewrite_error" class="form-error">{{ profiles.find(p => p.id === form.id).rewrite_error }}</p>
           <p class="tab-hint">保存后可在列表查看改写状态；成功后重新打开编辑会显示优化后的描述，role.md 同步更新。</p>
           <p class="tab-hint">Skills、引擎、工作空间、知识库等在「设置」页配置。</p>
@@ -339,7 +347,7 @@ async function removeProfile(id) {
               <input type="checkbox" :value="c" v-model="form.capabilities" /> {{ c }}
             </label>
           </div>
-          <label>Skills（保存后自动安装到工作空间 .agents/skills/）</label>
+          <label>Skills（保存后后台并行安装到工作空间 .agents/skills/）</label>
           <div v-for="(s, i) in form.skills" :key="s" class="skill-row">
             <span class="skill-name" :title="s">{{ s }}</span>
             <button type="button" class="x" @click="removeSkill(i)">✕</button>

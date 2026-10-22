@@ -80,6 +80,10 @@ class AgentService:
                 interview["error"] = "初始化问询因服务重启中断，请重新保存后重试"
                 if db:
                     db.save_agent_profile(profile)
+            if profile.get("skills_status") == "pending":
+                profile.update(skills_status="failed", skills_error="服务重启中断了 Skills 安装，请重新保存重试")
+                if db:
+                    db.save_agent_profile(profile)
         self.session_resets = {
             (r["platform"], r["chat_id"]): r for r in (db.list_session_resets() if db else [])
         }
@@ -315,16 +319,22 @@ class AgentService:
         ]
 
     def profile_for(self, platform: Platform, chat_id: str) -> dict | None:
-        """联系人绑定的 Agent 配置；未绑定时回退全局默认引擎。"""
+        """联系人绑定的 Agent 配置；未绑定时回退第一个已创建的 Agent。
+
+        不回退全局默认引擎：其工作目录来自全局配置而非 Agent 工作空间，
+        会让「创建 Agent 时指定的工作目录」失效（AI 会在错误目录下工作）。
+        """
         agent_id = self.agent_assignments.get((platform.value, chat_id))
-        return self.agent_profiles.get(agent_id) if agent_id else None
+        profile = self.agent_profiles.get(agent_id) if agent_id else None
+        if profile is not None:
+            return profile
+        return next(iter(self.agent_profiles.values()), None)
 
     def engine_for_profile(self, profile: dict) -> ACPAgentGenerator:
         """每个 Agent 配置一个独立 ACP 引擎实例（会话互相隔离）。"""
         if profile.get("pending"):
             raise ValueError("Agent 正在重新改写角色，请完成后再使用")
-        if profile.get("rewrite_status") == "failed":
-            raise ValueError(profile.get("rewrite_error") or "Agent 角色改写失败，请重新保存")
+        # 改写失败不再拦截：role.md 已用原始描述落盘，Agent 保持可用，润色失败仅提示重试。
         engine = self.profile_engines.get(profile["id"])
         if engine is not None:
             return engine
@@ -413,7 +423,7 @@ class AgentService:
         self.discard_profile_engine(agent_id)
 
     def assign_agent(self, platform: str, chat_id: str, agent_id: str | None) -> None:
-        """绑定/解绑联系人的 Agent；agent_id=None 表示使用默认引擎。"""
+        """绑定/解绑联系人的 Agent；agent_id=None 表示解除绑定（回退第一个已创建的 Agent）。"""
         key = (platform, chat_id)
         if agent_id is None:
             if self.db is not None:

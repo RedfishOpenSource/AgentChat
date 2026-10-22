@@ -224,7 +224,7 @@ onUnmounted(() => {
         />
       </details>
       <AgentStudio :debug-messages="debugMessages" :processing="processing" :connected="wsConnected" @message="upsert" @toast="toast" />
-      <p class="sidebar-note">回复由各监听联系人绑定的 Agent 生成；默认人工审核，发送前请核对目标会话</p>
+      <p class="sidebar-note">回复由各监听联系人绑定的 Agent 生成，未绑定时回退第一个已创建的 Agent（工作目录以其工作空间为准）；默认人工审核，发送前请核对目标会话</p>
     </aside>
 
     <main class="main">

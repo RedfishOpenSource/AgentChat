@@ -56,21 +56,22 @@ def test_create_and_each_save_rewrites_even_unchanged(client, tmp_path, monkeypa
     assert client.app.state.db.list_agent_profiles()[0]['instructions'] == result['instructions']
 
 
-def test_failure_explicit_preserves_old_role_and_retry_succeeds(client, tmp_path, monkeypatch):
+def test_failure_falls_back_to_raw_role_and_retry_succeeds(client, tmp_path, monkeypatch):
     async def ok(settings, description): return '成功改写后的角色提示词'
     monkeypatch.setattr('app.api.routes._llm_role_prompt', ok)
     created = client.post('/api/agent-profiles', json=payload(tmp_path)).json()['profile']
     role = Path(created['role_file'])
-    before = role.read_text(encoding='utf-8')
     async def fail(settings, description): raise RoleRewriteError('HTTP 401，请检查配置')
     monkeypatch.setattr('app.api.routes._llm_role_prompt', fail)
     failed = client.post('/api/agent-profiles', json=payload(tmp_path, id=created['id'])).json()['profile']
     assert failed['rewrite_status'] == 'failed' and not failed['pending']
     assert '401' in failed['rewrite_error']
-    assert role.read_text(encoding='utf-8') == before
+    # 润色失败不影响使用：role.md 已在保存时用原始描述落盘，重试成功后更新为润色结果
+    assert '帮助排查问题' in role.read_text(encoding='utf-8')
     monkeypatch.setattr('app.api.routes._llm_role_prompt', ok)
     fixed = client.post('/api/agent-profiles', json=payload(tmp_path, id=created['id'])).json()['profile']
     assert fixed['rewrite_status'] == 'succeeded' and not fixed['rewrite_error']
+    assert '成功改写后的角色提示词' in role.read_text(encoding='utf-8')
 
 
 def test_old_background_task_cannot_overwrite_new_save_or_resurrect_deleted(client, tmp_path, monkeypatch):
@@ -101,11 +102,12 @@ def test_background_success_and_failure_statuses(client, tmp_path, monkeypatch):
         return '优化成功的角色提示词'
     monkeypatch.setattr('app.api.routes._llm_role_prompt', optimize)
     created = client.post('/api/agent-profiles', json=payload(tmp_path, sync_mode='background')).json()['profile']
-    assert created['pending']
-    success = wait_profile(client, created['id'], lambda p: not p['pending'])
+    # 保存立即返回：Agent 已可用（pending=False），润色在后台进行
+    assert not created['pending'] and created['rewrite_status'] == 'pending'
+    success = wait_profile(client, created['id'], lambda p: p['rewrite_status'] != 'pending')
     assert success['rewrite_status'] == 'succeeded'
     client.post('/api/agent-profiles', json=payload(tmp_path, id=created['id'], description='失败', sync_mode='background'))
-    failed = wait_profile(client, created['id'], lambda p: not p['pending'])
+    failed = wait_profile(client, created['id'], lambda p: p['rewrite_status'] == 'failed')
     assert failed['rewrite_status'] == 'failed' and failed['rewrite_error'] == '请求失败'
 
 
