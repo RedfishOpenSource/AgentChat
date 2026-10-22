@@ -175,6 +175,15 @@ class ACPAgentGenerator(ReplyGenerator):
         return await self._generate_acp(message, on_progress)
 
     # ---------- ACP 模式 ----------
+    def _handshake_timeout(self) -> float:
+        """启动/握手/建会话的等待上限（60s 封顶）。
+
+        timeout=0（不限等待）指 session/prompt 的响应时长；握手若也不设上限，
+        进程起不来时会无限挂起，因此统一封顶。注意不能用 min(60, 0)=0，
+        那会让配置为「不限制」的 Agent 初始化必然超时。
+        """
+        return min(60.0, self.cfg.timeout) if self.cfg.timeout > 0 else 60.0
+
     async def _acp_start(self) -> None:
         command = self.cfg.command.strip()
         argv = _command_argv(command, _split_args(self.cfg.args))
@@ -295,38 +304,63 @@ class ACPAgentGenerator(ReplyGenerator):
             await _stop_process(self._proc)
         self._proc = None
 
+    async def _acp_initialize(self, on_progress=None) -> None:
+        """确保 Agent 子进程存活并完成 initialize 握手；进程重启前清掉失效会话缓存。"""
+        if self._proc is not None and self._proc.returncode is None:
+            return
+        self._sessions.clear()
+        _progress(on_progress, "starting", detail="正在启动 Agent 并建立连接")
+        await self._acp_start()
+        init = await self._acp_request(
+            "initialize",
+            {"protocolVersion": PROTOCOL_VERSION, "clientCapabilities": {}},
+            timeout=self._handshake_timeout(),
+        )
+        if "error" in init:
+            raise ACPAgentError(f"Agent initialize 失败: {init['error']}")
+
+    async def _acp_ensure_session(self, key: tuple[str, str], on_progress=None) -> str:
+        """取联系人会话 id，不存在则按需创建（同一联系人复用同一会话）。"""
+        sid = self._sessions.get(key)
+        if sid:
+            return sid
+        _progress(on_progress, "session", detail="正在创建联系人会话")
+        res = await self._acp_request(
+            "session/new",
+            {"cwd": self._cwd(), "mcpServers": self.cfg.mcp_servers},
+            timeout=self._handshake_timeout(),
+        )
+        if "error" in res:
+            raise ACPAgentError(f"Agent session/new 失败: {res['error']}")
+        sid = str((res.get("result") or {}).get("sessionId") or "")
+        if not sid:
+            raise ACPAgentError("Agent 未返回 sessionId")
+        self._sessions[key] = sid
+        logger.info("[acp] 新建 Agent 会话 %s -> %s", key, sid)
+        return sid
+
+    async def warmup(self, platform: str = "", chat_id: str = "", on_progress=None) -> None:
+        """预热：提前启动 Agent 进程并完成握手，可选预建指定联系人的会话。
+
+        创建/保存 Agent 后在后台调用，让初始化问询和首次正式问答免去
+        「启动进程 + 握手 + 建会话」的冷启动等待。幂等：进程与会话已就绪时
+        立即返回；pi 模式每次提问独立起进程，无预热收益，直接跳过。
+        """
+        if self.cfg.mode == "pi":
+            return
+        async with self._req_lock:
+            await self._acp_initialize(on_progress)
+            if platform and chat_id:
+                await self._acp_ensure_session((platform, chat_id), on_progress)
+
     async def _generate_acp(self, message: ChatMessage, on_progress=None) -> GenerationResult:
         if not self.cfg.command.strip():
             raise ACPAgentError("ACP Agent 启动命令未配置（acp_command）")
         _progress(on_progress, "queued", detail="等待 Agent 空闲")
         async with self._req_lock:
-            if self._proc is None or self._proc.returncode is not None:
-                self._sessions.clear()
-                _progress(on_progress, "starting", detail="正在启动 Agent 并建立连接")
-                await self._acp_start()
-                init = await self._acp_request(
-                    "initialize",
-                    {"protocolVersion": PROTOCOL_VERSION, "clientCapabilities": {}},
-                    timeout=min(60.0, self.cfg.timeout) if self.cfg.timeout > 0 else 60.0,
-                )
-                if "error" in init:
-                    raise ACPAgentError(f"Agent initialize 失败: {init['error']}")
+            await self._acp_initialize(on_progress)
             key = (message.platform.value, message.chat_id)
-            sid = self._sessions.get(key)
-            if not sid:
-                _progress(on_progress, "session", detail="正在创建联系人会话")
-                res = await self._acp_request(
-                    "session/new",
-                    {"cwd": self._cwd(), "mcpServers": self.cfg.mcp_servers},
-                    timeout=min(60.0, self.cfg.timeout),
-                )
-                if "error" in res:
-                    raise ACPAgentError(f"Agent session/new 失败: {res['error']}")
-                sid = str((res.get("result") or {}).get("sessionId") or "")
-                if not sid:
-                    raise ACPAgentError("Agent 未返回 sessionId")
-                self._sessions[key] = sid
-                logger.info("[acp] 新建 Agent 会话 %s -> %s", key, sid)
+            sid = await self._acp_ensure_session(key, on_progress)
             chunks: list[str] = []
             self._notify_retries = 0
             _progress(on_progress, "thinking", detail="问题已提交，等待 Agent 响应")

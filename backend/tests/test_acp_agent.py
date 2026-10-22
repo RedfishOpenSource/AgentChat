@@ -196,6 +196,52 @@ def test_agents_endpoint_real_path_detection(hot_client):
 
 
 @pytest.mark.asyncio
+async def test_acp_warmup_precreates_session_and_is_idempotent(tmp_path):
+    """预热：提前启动+握手+预建会话；幂等不重复建会话；首次提问直接复用预热会话。"""
+    from app.config import ACPSettings
+    from app.engine.acp import ACPAgentGenerator
+    from app.models import ChatMessage, Platform
+
+    script = tmp_path / "fake_acp_agent.py"
+    script.write_text(FAKE_ACP_AGENT, encoding="utf-8")
+    engine = ACPAgentGenerator(ACPSettings(mode="acp", command=sys.executable,
+                                           args=str(script), timeout=30))
+    try:
+        key = ("web", "debug:a:init")
+        await engine.warmup(platform=key[0], chat_id=key[1])
+        assert engine._proc.returncode is None, "预热后进程应存活"
+        assert engine._sessions[key] == "sess-1", "预热应预建指定会话"
+
+        await engine.warmup(platform=key[0], chat_id=key[1])  # 幂等：已就绪时不重建
+        assert engine._sessions[key] == "sess-1"
+
+        result = await engine.generate(
+            ChatMessage(platform=Platform.WEB, chat_id=key[1], content="你好"), [])
+        assert "sess-1" in result.content, "首次提问应复用预热会话而非新建"
+    finally:
+        await engine.aclose()
+
+
+@pytest.mark.asyncio
+async def test_acp_timeout_zero_still_handshakes(tmp_path):
+    """timeout=0（不限等待）只作用于问答；握手/建会话仍是 60s 封顶而非 0s 立即超时。"""
+    from app.config import ACPSettings
+    from app.engine.acp import ACPAgentGenerator
+    from app.models import ChatMessage, Platform
+
+    script = tmp_path / "fake_acp_agent.py"
+    script.write_text(FAKE_ACP_AGENT, encoding="utf-8")
+    engine = ACPAgentGenerator(ACPSettings(mode="acp", command=sys.executable,
+                                           args=str(script), timeout=0))
+    try:
+        result = await engine.generate(
+            ChatMessage(platform=Platform.WEB, chat_id="z1", content="你好"), [])
+        assert "sess-1" in result.content and "你好" in result.content
+    finally:
+        await engine.aclose()
+
+
+@pytest.mark.asyncio
 async def test_acp_empty_after_retries_raises_clear_error(tmp_path):
     """模型连续重试后仍无正文：明确报错，而不是沉默的「未返回文本内容」。"""
     from app.config import ACPSettings

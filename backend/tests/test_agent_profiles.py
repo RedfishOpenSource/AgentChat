@@ -257,6 +257,70 @@ for line in sys.stdin:
         assert "重启" in data["init_interview"]["error"]
 
 
+def test_profile_save_warms_agent_process_and_init_session(tmp_path):
+    """保存 Agent 后并行预热：进程提前启动、init 调试会话预建，问询直接复用不冷启动。"""
+    import time
+
+    fake_acp = r'''
+import json, sys
+sessions = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    if msg.get("method") == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
+                          "result": {"protocolVersion": 1, "agentCapabilities": {}}}), flush=True)
+    elif msg.get("method") == "session/new":
+        sessions += 1
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
+                          "result": {"sessionId": f"sess-{sessions}"}}), flush=True)
+    elif msg.get("method") == "session/prompt":
+        sid = msg["params"]["sessionId"]
+        print(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": sid,
+            "update": {"sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": f"[{sid}] 初始化确认：无待确认内容"}}}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"stopReason": "end_turn"}}), flush=True)
+'''
+    db_path = str(tmp_path / "warmup.db")
+    ws = str(tmp_path / "ws")
+    os.makedirs(ws, exist_ok=True)
+    script = tmp_path / "fake_acp.py"
+    script.write_text(fake_acp, encoding="utf-8")
+    body = {"name": "预热", "description": "预热验证", "engine": "pi",
+            "command": sys.executable, "args": str(script), "workspace": ws,
+            "sync_mode": "wait"}
+    with _client(db_path) as client:
+        r = client.post("/api/agent-profiles", json=body)
+        assert r.status_code == 200, r.text
+        agent_id = r.json()["profile"]["id"]
+        agent = client.app.state.agent
+        key = ("web", f"debug:{agent_id}:init")
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            engine = agent.profile_engines.get(agent_id)
+            if engine is not None and engine._proc is not None \
+                    and engine._proc.returncode is None and engine._sessions.get(key):
+                break
+            time.sleep(0.1)
+        assert engine is not None, "保存后应后台预热引擎"
+        assert engine._proc.returncode is None, "预热进程应存活"
+        assert engine._sessions.get(key) == "sess-1", "init 调试会话应被预建"
+
+        # 初始化问询复用预热会话（sess-1），不再新建会话
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            iv = agent.agent_profiles[agent_id].get("init_interview") or {}
+            if iv.get("status") in ("done", "failed"):
+                break
+            time.sleep(0.2)
+        assert iv.get("status") == "done", iv
+        assert agent.profile_engines[agent_id]._sessions.get(key) == "sess-1", \
+            "问询应复用预热会话，而不是冷启动后新建"
+
+
 def test_agent_profile_rejects_missing_workspace(tmp_path):
     with _client(str(tmp_path / "x.db")) as client:
         r = client.post("/api/agent-profiles", json={

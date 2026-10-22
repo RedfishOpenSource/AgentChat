@@ -328,12 +328,37 @@ class AgentService:
         engine = self.profile_engines.get(profile["id"])
         if engine is not None:
             return engine
+        engine = self._new_profile_engine(profile)
+        self.profile_engines[profile["id"]] = engine
+        return engine
+
+    def _new_profile_engine(self, profile: dict) -> ACPAgentGenerator:
+        """按配置新建 ACP 引擎实例（不查 pending、不注册缓存；供首次使用与预热共用）。"""
+        return ACPAgentGenerator(self._profile_engine_cfg(profile))
+
+    async def warmup_profile_engine(self, profile: dict, platform: str = "", chat_id: str = "") -> None:
+        """后台预热 Agent 引擎：提前启动进程并完成握手，可选预建指定会话。
+
+        创建/保存 Agent 后调用，让初始化问询与首次正式问答免去冷启动等待。
+        刻意不检查 pending（创建过程中角色改写尚未完成，预热是预期行为）；
+        失败由调用方兜底记日志，不影响主流程。
+        """
+        engine = self.profile_engines.get(profile["id"])
+        if engine is None:
+            engine = self._new_profile_engine(profile)
+            self.profile_engines[profile["id"]] = engine
+        warm = getattr(engine, "warmup", None)
+        if warm is not None:
+            await warm(platform=platform, chat_id=chat_id)
+
+    def _profile_engine_cfg(self, profile: dict) -> ACPSettings:
+        """按配置构建 ACP 引擎参数（不创建实例；供引擎新建与变更比较共用）。"""
         preset = find_agent(str(profile.get("engine") or ""))
         command = str(profile.get("command") or "")
         mode = (preset or {}).get("mode", "acp")
         if profile.get("engine") == "pi" and Path(command).stem.lower() == "pi":
             mode = "pi"  # 兼容手动配置的 pi RPC；pi-acp 使用标准 ACP
-        cfg = ACPSettings(
+        return ACPSettings(
             mode=mode,
             command=str(profile.get("command") or ""),
             args=str(profile.get("args") or ""),
@@ -346,16 +371,33 @@ class AgentService:
             mcp_servers=load_workspace_mcps(str(profile.get("workspace") or ""), list(profile.get("mcp_servers") or [])),
             plan_before_execute=bool(profile.get("plan_before_execute")),
         )
-        engine = ACPAgentGenerator(cfg)
-        self.profile_engines[profile["id"]] = engine
-        return engine
+
+    @staticmethod
+    def _engine_process_signature(cfg: ACPSettings) -> str:
+        """进程级配置指纹：这些字段变化必须重启 Agent 进程；其余（提示词类）可原地热更新。"""
+        return json.dumps([
+            cfg.mode, cfg.command, cfg.args, cfg.cwd, cfg.timeout,
+            cfg.env_name, cfg.env_key, cfg.mcp_servers,
+        ], ensure_ascii=False, sort_keys=True)
 
     def save_agent_profile(self, profile: dict) -> None:
-        """保存/更新 Agent 配置并重建其运行时引擎。"""
+        """保存/更新 Agent 配置；按变更范围决定引擎处理方式。
+
+        - 进程级配置（命令/参数/工作空间/超时/MCP）变化：丢弃旧引擎，下次使用现场冷启动
+        - 仅提示词类字段（角色指令等）变化：原地热更新 cfg，保留已预热的进程与会话，
+          创建/改写流程不需要重新冷启动
+        """
         if self.db is not None:
             self.db.save_agent_profile(profile)
         self.agent_profiles[profile["id"]] = profile
-        self._discard_profile_engine(profile["id"])
+        engine = self.profile_engines.get(profile["id"])
+        if engine is None:
+            return
+        new_cfg = self._profile_engine_cfg(profile)
+        if self._engine_process_signature(engine.cfg) != self._engine_process_signature(new_cfg):
+            self.discard_profile_engine(profile["id"])
+            return
+        engine.cfg = new_cfg
 
     def delete_agent_profile(self, agent_id: str) -> None:
         """删除 Agent 配置，并解除全部联系人绑定。"""
@@ -368,7 +410,7 @@ class AgentService:
         self.agent_assignments = {
             key: aid for key, aid in self.agent_assignments.items() if aid != agent_id
         }
-        self._discard_profile_engine(agent_id)
+        self.discard_profile_engine(agent_id)
 
     def assign_agent(self, platform: str, chat_id: str, agent_id: str | None) -> None:
         """绑定/解绑联系人的 Agent；agent_id=None 表示使用默认引擎。"""
@@ -382,7 +424,8 @@ class AgentService:
             self.db.assign_agent(platform, chat_id, agent_id)
         self.agent_assignments[key] = agent_id
 
-    def _discard_profile_engine(self, agent_id: str) -> None:
+    def discard_profile_engine(self, agent_id: str) -> None:
+        """丢弃并关闭指定 Agent 的运行时引擎（进程不再复用时调用）。"""
         engine = self.profile_engines.pop(agent_id, None)
         if engine is None:
             return

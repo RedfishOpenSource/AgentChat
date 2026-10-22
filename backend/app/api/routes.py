@@ -200,12 +200,37 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
         old_task.cancel()
     agent.save_agent_profile(dict(data))
 
-    # ---- 后台收尾：AI 提示词改写 + GitHub 案例同步 + role.md 覆盖（不阻塞创建） ----
+    # ---- 后台收尾：Agent 进程预热 + 提示词同步 + AI 角色改写 + 初始化问询 ----
+    # 预热/同步与角色改写三者并行，问询前汇合；创建到问询完成的总耗时从
+    # 「改写 → 同步 → 冷启动 + 问询」的串行链缩短为 max(改写, 同步, 预热) + 问询。
     import time as _time
     from ..prompts_sync import mark_synced, prompts_recent, sync_workspace_prompts
 
     def current() -> bool:
         return agent.agent_profiles.get(data["id"], {}).get("rewrite_revision") == revision
+
+    async def _sync_prompts() -> None:
+        """提示词案例同步（网络耗时）：与角色改写并行；失败只告警，不阻断主流程。"""
+        if prompts_recent(data["workspace"]):
+            return
+        try:
+            await sync_workspace_prompts(data["workspace"])
+            mark_synced(data["workspace"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[prompts-sync] 后台同步失败 type=%s", type(exc).__name__)
+
+    async def _warmup_engine() -> None:
+        """提前启动 Agent 进程并预建 init 调试会话，问询与首次对话免去冷启动等待。"""
+        try:
+            await agent.warmup_profile_engine(
+                dict(data), platform="web", chat_id=f"debug:{data['id']}:{INIT_SESSION}"
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.info("[agent-warmup] 预热未完成(%s)，首次使用将现场启动", str(exc)[:120])
 
     async def _finalize() -> str:
         from ..role_prompts import RoleRewriteError, write_role_file
@@ -230,14 +255,10 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
                 reason = str(exc) if isinstance(exc, RoleRewriteError) else "角色文件写入或改写失败，请重新保存并检查服务日志"
                 data.update(pending=False, rewrite_status="failed", rewrite_error=reason)
                 agent.save_agent_profile(dict(data))
+                # 改写失败后预热的进程不可用（引擎会被 pending/failed 拦截），及时回收避免僵尸进程
+                agent.discard_profile_engine(data["id"])
             logger.warning("[agent-role] 改写失败 id=%s type=%s", data["id"], type(exc).__name__)
             return "角色改写失败，请查看 Agent 的错误信息后重试"
-        if not prompts_recent(data["workspace"]):
-            try:
-                await sync_workspace_prompts(data["workspace"])
-                mark_synced(data["workspace"])
-            except Exception as exc:
-                logger.warning("[prompts-sync] 后台同步失败 type=%s", type(exc).__name__)
         return "AI 角色已重新改写并写入 role.md"
 
     async def _run_interview() -> None:
@@ -266,17 +287,26 @@ async def upsert_agent_profile(request: Request, body: AgentProfileRequest):
         if agent.profile_tasks.get(data["id"]) is completed:
             agent.profile_tasks.pop(data["id"], None)
 
+    # 保存后立即并行启动：进程预热 + 提示词同步（与角色改写同时进行）
+    warm_task = asyncio.create_task(_warmup_engine())
+    sync_task = asyncio.create_task(_sync_prompts())
+
+    async def _await_parallel_tail() -> None:
+        """等预热与同步汇合后再问询：保证工作空间文件与 Agent 会话就绪（失败不阻断）。"""
+        await asyncio.gather(warm_task, sync_task, return_exceptions=True)
+        await _run_interview()
+
     if body.sync_mode == "wait":
         sync_note = await _finalize()
         if data.get("init_interview", {}).get("status") == "pending" and current():
-            interview_task = asyncio.create_task(_run_interview())
+            interview_task = asyncio.create_task(_await_parallel_tail())
             agent.profile_tasks[data["id"]] = interview_task
             interview_task.add_done_callback(forget)
             sync_note += "；正在初始化问询，完成后请打开调试确认待确认内容"
     else:
         async def _finalize_and_interview():
             note = await _finalize()
-            await _run_interview()
+            await _await_parallel_tail()
             return note
         task = asyncio.create_task(_finalize_and_interview())
         agent.profile_tasks[data["id"]] = task
