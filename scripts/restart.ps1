@@ -72,6 +72,15 @@ function Start-ChatAgent {
 
     Write-Host "[2/3] 重新编译前端 ..." -ForegroundColor Cyan
     Push-Location (Join-Path $Root 'frontend')
+    if (-not (Test-Path 'node_modules')) {
+        Write-Host "  首次运行：安装前端依赖（npm install）..."
+        npm install
+        if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            Write-Host "前端依赖安装失败，请确认已安装 Node.js/npm 并联网后重试。" -ForegroundColor Red
+            return
+        }
+    }
     npm run build
     $buildOk = $LASTEXITCODE -eq 0
     Pop-Location
