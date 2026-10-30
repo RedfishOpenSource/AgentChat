@@ -18,6 +18,7 @@ import json
 import hashlib
 import logging
 import re
+import time
 import uuid
 
 from ..models import ChatMessage, Platform, gen_id, now_ms
@@ -192,12 +193,16 @@ class DingTalkDwsConnector(BaseConnector):
     platform = Platform.DINGTALK
     RESTART_DELAY = 3.0
     CMD_TIMEOUT = 60.0
+    CHAT_CACHE_TTL = 300.0  # 会话名 → openConversationId 缓存有效期（秒）
 
     def __init__(self, settings: ConnectorSettings, on_messages: EmitFn) -> None:
         super().__init__(settings, on_messages)
         self._procs: list[asyncio.subprocess.Process] = []
         self._tasks: list[asyncio.Task] = []
         self._buffer: list[ChatMessage] = []
+        self._chat_cache: list[tuple[str, str]] = []
+        self._chat_cache_at: float = 0.0
+        self._chat_cache_task: asyncio.Task | None = None
 
     async def list_contacts(self) -> list[tuple[str, str]]:
         """当前用户加入的会话列表（会话名, openConversationId），供前端联系人弹窗选择。
@@ -317,10 +322,41 @@ class DingTalkDwsConnector(BaseConnector):
             logger.exception("[dingtalk] 事件流读取异常: %s", exc)
 
     async def poll(self) -> list[ChatMessage]:
+        self._maybe_refresh_chat_cache()
         if not self._buffer:
             return []
         msgs, self._buffer = self._buffer, []
         return msgs
+
+    def _maybe_refresh_chat_cache(self) -> None:
+        """缓存过期后异步刷新会话列表（供 username_by_name 反解显示名）。"""
+        if time.monotonic() - self._chat_cache_at < self.CHAT_CACHE_TTL:
+            return
+        self._chat_cache_at = time.monotonic()
+        if self._chat_cache_task is not None and not self._chat_cache_task.done():
+            return
+        self._chat_cache_task = asyncio.create_task(self._refresh_chat_cache())
+
+    async def _refresh_chat_cache(self) -> None:
+        try:
+            self._chat_cache = await self.list_contacts()
+        except Exception:  # noqa: BLE001
+            logger.warning("[dingtalk] 刷新会话名缓存失败", exc_info=True)
+
+    def username_by_name(self, name: str) -> str | None:
+        """把会话名（群名/联系人名）反解为 openConversationId；解析不出返回 None。
+
+        供白名单匹配使用：监听配置保存的是显示名，而 webhook 事件可能缺
+        conversationTitle，此时消息 chat_id/meta 里只有 openConversationId。
+        会话列表由 poll() 周期性后台刷新，此处同步读缓存，不阻塞消息处理。
+        """
+        key = (name or "").strip()
+        if not key:
+            return None
+        for chat_name, cid in self._chat_cache:
+            if chat_name.strip() == key and cid:
+                return cid
+        return None
 
     # ---------- 发送 ----------
     async def send_reply(self, message: ChatMessage) -> bool:

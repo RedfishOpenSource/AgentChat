@@ -113,7 +113,45 @@ function progressHint(p) {
   return p.detail
 }
 
-watch(filter, () => { contact.value = '' })
+// 监听联系人按显示名保存，而部分消息的 chat_id 是平台原始会话 ID（如钉钉 openConversationId）。
+// 拉取会话建议建立 显示名 → 会话ID 映射，筛选时两者都能匹配上。
+const contactIdMap = reactive({}) // platform -> { 显示名: Set(会话ID) }
+
+async function refreshContactIds() {
+  const platform = filter.value
+  try {
+    const data = await api.contactSuggestions(platform)
+    const map = {}
+    for (const s of data.suggestions || []) {
+      const name = String(s.name || '').trim()
+      const id = String(s.username || '').trim()
+      if (!name || !id) continue
+      ;(map[name] = map[name] || new Set()).add(id)
+    }
+    contactIdMap[platform] = map
+  } catch { /* 拉取失败时退回仅按名字匹配 */ }
+}
+
+function matchesContact(m, name) {
+  if (m.chat_id === name) return true
+  const meta = m.meta || {}
+  for (const section of ['dws', 'replica']) {
+    const s = meta[section] || {}
+    if (s.title === name || s.username === name || s.conversation_id === name) return true
+  }
+  const ids = contactIdMap[m.platform]?.[name]
+  if (ids?.size) {
+    if (ids.has(m.chat_id)) return true
+    for (const section of ['dws', 'replica']) {
+      const s = meta[section] || {}
+      if (ids.has(s.username) || ids.has(s.conversation_id)) return true
+    }
+  }
+  return false
+}
+
+watch(filter, () => { contact.value = ''; refreshContactIds() })
+refreshContactIds()
 
 function onStreamScroll() {
   const el = streamEl.value
@@ -145,7 +183,10 @@ const platformScoped = computed(() =>
   ['wechat', 'dingtalk'].includes(filter.value) ? filter.value : '')
 
 const contactOptions = computed(() => {
-  const out = [...(props.contacts[filter.value] || []).filter(c => c !== '*')]
+  // 只展示当前监听的联系人/群聊；白名单为空或含 *（监听全部）时，回退为消息中出现过的会话
+  const watchlist = (props.contacts[filter.value] || []).map(c => String(c).trim()).filter(c => c && c !== '*')
+  if (watchlist.length) return [...new Set(watchlist)]
+  const out = []
   for (const m of props.messages) {
     if (platformScoped.value && m.platform !== platformScoped.value) continue
     if (m.chat_id && !out.includes(m.chat_id)) out.push(m.chat_id)
@@ -182,7 +223,7 @@ function pickCandidate(m, i) {
 const filtered = computed(() =>
   props.messages.filter((m) =>
     m.platform === filter.value
-    && (!contact.value || m.chat_id === contact.value))
+    && (!contact.value || matchesContact(m, contact.value)))
 )
 
 // 切换联系人/平台时滚动到底部
